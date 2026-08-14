@@ -1,0 +1,27 @@
+{
+  "name": "lichess-blindspot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test --experimental-strip-types \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@lichess-org/chessground": "^10.1.1",
+    "@lichess-org/stockfish-web": "0.4.2",
+    "chessops": "^0.15.1",
+    "idb-keyval": "^6.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
