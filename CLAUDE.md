@@ -38,11 +38,27 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
   `429 {"error":"Please only run 1 request(s) at a time"}`. Distinct from the
   per-second rate limit and worth reporting to the user differently.
 
-**Not yet verified against the live API.** Everything above is read from lila
-source. The dev host these notes were written on could not complete a single
-request to the games export (permanently 429, shared egress IP), so the field
-semantics have never been checked against a real response. Do that before
-building further on them.
+- `analysis` can be **shorter than `moves`** — a checkmate position gets no
+  entry (`AnalysisBuilder` filters them), so a game ending in mate has one
+  fewer. It aligns from index 0 and is never longer, so index defensively and
+  never derive the move count from it.
+
+**Verified against the live API 2026-08-14** with `scripts/verify-export.ts`,
+over two real analysed games (40 entries carrying a variation, between them):
+
+- `variation[0]` was legal in the position **before** its move 40/40, and in the
+  position after it only 3/40 (moves that happen to be legal in both). The
+  before-position reading is right.
+- `best === uci(variation[0])` from the before-position, 40/40.
+- `variation[0]` differed from the move actually played, 40/40 — a variation is
+  present only when the engine disagreed.
+- White POV confirmed: a game white won by mate ends `{"mate":1}`, and white's
+  blunders drop the eval while black's raise it.
+
+The games-export endpoint could not be reached from this host (permanently
+`429`), but the single-game export works, so use that to sample:
+`curl -s https://lichess.org/api/puzzle/daily` for an id of an analysed game,
+then `GET /game/export/{id}?evals=true&division=true`.
 
 ## Ported code
 
