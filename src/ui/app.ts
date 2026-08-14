@@ -259,8 +259,10 @@ export class App {
     if (verdict === 'eval') {
       this.setFeedback(`<strong>Checking ${escape(move.san)}…</strong>`);
       const judged = await this.judge(move);
-      solve.onCeval(judged.score ?? { cp: 0 });
-      if (!judged.score) solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
+      // With no engine there is no verdict to give, so only the move it would
+      // have played can be accepted, and the note says as much.
+      if (judged.score) solve.onCeval(judged.score);
+      else solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
       this.afterVerdict(solve.feedback === 'win', move, judged.note);
     } else {
       this.afterVerdict(verdict === 'win', move);
