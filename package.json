@@ -8,8 +8,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "npm run prepare-engine && vite",
+    "build": "npm run prepare-engine && tsc --noEmit && vite build",
+    "prepare-engine": "node scripts/prepare-engine.mjs",
     "preview": "vite preview",
     "test": "node --test --experimental-strip-types \"test/*.test.ts\""
   },
