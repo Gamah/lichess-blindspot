@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { Puzzle } from '../src/deck/build.ts';
-import { classify, judgeEval, judgeRanked, Solve, TOP_LINES, withinTopLines } from '../src/solve/retro.ts';
+import {
+  altVerdicts,
+  classify,
+  judgeEval,
+  judgeRanked,
+  Solve,
+  TOP_LINES,
+  withinTopLines,
+} from '../src/solve/retro.ts';
 
 // White to move, having played Ng5 in the game when Bc4 was the engine's move.
 const puzzle: Puzzle = {
@@ -141,4 +149,19 @@ test('the rank of the last attempt is kept, because the feedback line says it', 
   solve.play({ uci: 'b1c3', san: 'Nc3' });
   solve.onRanked(TOP_LINES.hard);
   assert.equal(solve.rank, 2);
+});
+
+test('the ranking carries its own verdicts, and being ranked is not one', () => {
+  // MultiPV fills five slots whether or not five moves hold: a2a3 is the
+  // engine's fifth choice and still throws the position away. This is what the
+  // reveal colours its arrows by, so a "fan of five options" cannot go on
+  // implying all five were playable.
+  assert.deepEqual(altVerdicts(puzzle), [true, true, true, true, false]);
+});
+
+test('alt verdicts are the eval test alone, so difficulty cannot repaint them', () => {
+  // Nothing here takes a `lines` argument: rank 3 is sound on Hard too, Hard
+  // simply asks more than sound. The numbers in the arrowheads say that part.
+  assert.equal(altVerdicts(puzzle).length, puzzle.alts.length);
+  assert.equal(altVerdicts({ ...puzzle, alts: [] }).length, 0);
 });

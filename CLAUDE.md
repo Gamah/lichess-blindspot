@@ -375,12 +375,35 @@ it is not one yet, so don't infer one from the code.
 The reveal draws the ranking: `Board.reveal` puts numbered arrows on the board
 **as it stands** — the position after the move that ended the solve, not the one
 the puzzle handed out — so the arrows leave squares their pieces have left,
-which reads as "these were the options". Blue fading through the `rank1`..
-`rank5` brushes, the move that solved it in green if the engine ranked it, and
-the game's move in red on top. Numbered because five shades of one blue is not
-a ranking anyone can read, and chessground has no per-shape opacity, so a fade
-has to be a brush per step — merged into the defaults by its deep-merging
-config.
+which reads as "these were the options".
+
+**A rank arrow says two independent things, so colour carries only one.** The
+fade and the number say *which* line it is; green or red says whether the app
+would have accepted it. It was a single blue fade, and that was wrong: MultiPV
+returns five lines whether or not five moves are sound, so ranks 3–5 are "the
+least bad remaining" and are routinely losing. Drawing them like rank 1 read as
+a fan of five options when the position had one move and four ways to throw the
+game away — and in the case that prompted this, the game's own blunder *was*
+the engine's fourth line, so the fan contained the mistake being reviewed.
+`pass1`..`pass5` and `fail1`..`fail5` are the same opacity/lineWidth ramp in
+chessground's green and lila's paleRed; `found` is the solving move at full
+strength; the game's move stays red on top. Numbered because a fade alone is
+not a ranking anyone can read, and chessground has no per-shape opacity, so a
+fade has to be a brush per step — merged into the defaults by its deep-merging
+config. `rankNumber` sizes the glyph from `RANK_BRUSHES[brush].lineWidth`, so a
+brush that is not in that table silently mis-sizes its number.
+
+**The colour is `altVerdicts`, the eval test alone — deliberately not the
+difficulty gate.** So it is a property of the position: the same reveal looks
+the same on Easy and on Hard, instead of a move changing colour because of a
+setting. The numbers already say what a difficulty made of it, and a green 3 on
+Hard means "sound, and Hard asked more than sound of you", which is what Hard
+is.
+
+**The lichess link is `ply - 1`, not `ply`.** `puzzle.ply` is the ply of the
+mistake and lichess' `#n` fragment selects the position *after* ply n, so the
+obvious link lands one move late with the blunder already played. `gameUrl`
+opens the position that was handed out; stepping forward once is the reveal.
 
 The numbers are a `customSvg`, not chessground's `label`: `renderLabel`
 hardcodes a white-outlined disc behind the text, and five of those read as a

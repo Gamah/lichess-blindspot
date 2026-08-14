@@ -18,7 +18,7 @@ import { puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import { DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
+import { altVerdicts, DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
 import {
   mb,
   Profile,
@@ -811,11 +811,13 @@ export class App {
     if (!solve || !this.profile) return;
     this.board?.freeze();
     // Everything about the position at once, on the board as it stands — the
-    // engine's five best as numbered arrows, the move the game played in red,
-    // and the move that ended the solve in green if the engine ranked it. No
-    // search: the ranking arrived with the puzzle.
+    // engine's five best as numbered arrows, each green or red by whether the
+    // eval test would have taken it, the move the game played in red over the
+    // top, and the move that ended the solve at full strength. No search: the
+    // ranking arrived with the puzzle and `altVerdicts` is arithmetic on it.
+    const sound = altVerdicts(solve.puzzle);
     this.board?.reveal(
-      solve.puzzle.alts.map(a => a.uci),
+      solve.puzzle.alts.map((a, i) => ({ uci: a.uci, sound: sound[i] ?? false })),
       solve.puzzle.played.uci,
       result === 'win' ? solve.lastAttempt?.uci : undefined,
     );
@@ -1104,12 +1106,21 @@ function threadOptions(): string {
 const showEval = (e: { cp?: number; mate?: number }): string =>
   e.mate !== undefined ? `#${e.mate}` : `${e.cp! > 0 ? '+' : ''}${(e.cp! / 100).toFixed(1)}`;
 
+/**
+ * `puzzle.ply` is the ply of the *mistake*, and lichess' `#n` fragment selects
+ * the position **after** ply n — so linking it lands one move past the puzzle,
+ * with the blunder already on the board. `ply - 1` opens the position that was
+ * handed out, and stepping forward once is then the reveal.
+ */
+const gameUrl = (id: string, puzzle: Puzzle): string =>
+  `https://lichess.org/${escape(id)}/${puzzle.pov}#${Math.max(0, puzzle.ply - 1)}`;
+
 function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
   const them = puzzle.pov === 'white' ? game.players.black : game.players.white;
   const name = them.user?.name ?? 'Anonymous';
   const when = new Date(game.createdAt).toLocaleDateString();
   return `<p class="line"><span class="label">Game</span>
-    <a href="https://lichess.org/${escape(game.id)}/${puzzle.pov}#${puzzle.ply}" target="_blank"
+    <a href="${gameUrl(game.id, puzzle)}" target="_blank"
        rel="noopener">move ${move} vs ${escape(name)}</a>, ${escape(when)}</p>`;
 }
 

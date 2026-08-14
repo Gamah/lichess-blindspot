@@ -84,6 +84,20 @@ export function judgeRanked(
 const scoreOf = (alt: Alt): EvalScore =>
   alt.mate !== undefined ? { mate: alt.mate } : { cp: alt.eval ?? 0 };
 
+/**
+ * The eval verdict on every ranked line, best first — what the reveal colours
+ * its arrows by.
+ *
+ * The eval test only, without any difficulty gate: this asks "is the move
+ * sound", which is a property of the position, and the ranks themselves say
+ * what a setting would have made of it. Being ranked at all means nothing —
+ * MultiPV fills five slots whether or not five moves hold, so this is
+ * routinely `[true, true, false, false, false]`, and that is the thing the
+ * board has to be able to say.
+ */
+export const altVerdicts = (puzzle: Puzzle): boolean[] =>
+  puzzle.alts.map(alt => judgeEval(puzzle, scoreOf(alt)) === 'win');
+
 export interface Move {
   uci: string;
   san: string;

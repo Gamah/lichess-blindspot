@@ -13,26 +13,57 @@ import { applyUci, dests, isCheck } from '../deck/positions.ts';
 import type { Color } from '../analysis/winningChances.ts';
 
 /**
- * One brush per rank, the same blue fading out as it goes down the list —
- * lila's paleBlue is `#003088` at 0.4, and this is that idea spread over five
- * arrows so the ordering is visible without reading the numbers.
+ * Two brushes per rank, one fade each, because a rank arrow has to say two
+ * separate things at once and colour can only carry one of them:
+ *
+ * - **which** it is in the engine's order — the fade, and the number in the head
+ * - **whether the app would have taken it** — green or red
+ *
+ * They are genuinely independent, and a single blue fade said only the first.
+ * MultiPV always returns five lines whether or not five moves are sound, so
+ * ranks 3–5 are "the least bad remaining" and can be outright losing; drawing
+ * them in the same colour as rank 1 reads as a fan of options when it is
+ * really one move and four ways to throw the game away.
+ *
+ * Green/red is the *eval* test only — `judgeEval`, the -0.04 that came from
+ * retroCtrl — and deliberately **not** the difficulty gate on top of it. The
+ * colour is then a property of the position rather than of a setting, so the
+ * same reveal looks the same on Easy and on Hard, and the numbers already say
+ * which ranks a difficulty would have refused. A green 3 on Hard means "sound,
+ * and Hard asked more than sound of you", which is what Hard is.
  *
  * Chessground has no per-shape opacity (`modifiers` is lineWidth and hilite
  * only), so a fade has to be a brush per step.
  */
 type Brush = { key: string; color: string; opacity: number; lineWidth: number };
 
+/** Rank 1 strongest, rank 5 faintest. Shared by both fades so they compare. */
+const RANK_FADE = [0.85, 0.65, 0.5, 0.38, 0.28];
+
+const fade = (name: string, key: string, color: string): [string, Brush][] =>
+  RANK_FADE.map((opacity, i) => [
+    `${name}${i + 1}`,
+    { key: `${key}${i + 1}`, color, opacity, lineWidth: 12 - i },
+  ]);
+
 const RANK_BRUSHES: Record<string, Brush> = {
-  ...Object.fromEntries(
-    [0.85, 0.65, 0.5, 0.38, 0.28].map((opacity, i) => [
-      `rank${i + 1}`,
-      { key: `r${i + 1}`, color: '#003088', opacity, lineWidth: 12 - i },
-    ]),
-  ),
-  // The one you found, at full strength — chessground's green, so it reads as
-  // the same "yes" the feedback line gives.
-  found: { key: 'fnd', color: '#15781B', opacity: 0.9, lineWidth: 12 },
+  // Sound: chessground's green, the same "yes" the feedback line gives.
+  ...Object.fromEntries(fade('pass', 'p', '#15781B')),
+  // Refused: lila's paleRed, the same red the played move is drawn in — and
+  // that is the point rather than a collision. The move played in the game is
+  // just the best-known member of this set, and in most positions it is one of
+  // these five, drawn over its own arrow.
+  ...Object.fromEntries(fade('fail', 'f', '#882020')),
+  // The one you found, at full strength: a pass, weighted so "yours" is
+  // visible among the other greens without a third colour.
+  found: { key: 'fnd', color: '#15781B', opacity: 0.95, lineWidth: 12 },
 };
+
+/** One line of the stored ranking, with the verdict the eval test gives it. */
+export interface RankedMove {
+  uci: string;
+  sound: boolean;
+}
 
 export interface PlayedMove {
   uci: string;
@@ -146,17 +177,19 @@ export class Board {
    * arrows leave from squares their pieces have left, which reads as what it
    * is: these were the options, and here is what happened instead.
    *
-   * `top` is the engine's own ordering, best first, numbered and fading.
-   * `played` is what the game did, in red. `found` is the move that solved it:
-   * if the engine ranked it, that arrow turns green and keeps its number, so
-   * "you found its third choice" is legible from the board alone.
+   * `top` is the engine's own ordering, best first, numbered and fading, each
+   * entry carrying whether the app would have accepted it: green for sound,
+   * red for a move that throws enough away to be refused. `played` is what the
+   * game did, in red at full strength. `found` is the move that solved it,
+   * which keeps its number, so "you found its third choice" is legible from
+   * the board alone.
    *
-   * Numbered rather than coloured alone, because five shades of one blue is a
-   * ranking nobody can read.
+   * Numbered rather than coloured alone, because the colour is now spent on
+   * the verdict and a fade on its own is a ranking nobody can read.
    */
-  reveal(top: readonly string[], played?: string, found?: string): void {
-    const shapes: DrawShape[] = top.slice(0, 5).map((uci, i) => {
-      const brush = uci === found ? 'found' : `rank${i + 1}`;
+  reveal(top: readonly RankedMove[], played?: string, found?: string): void {
+    const shapes: DrawShape[] = top.slice(0, 5).map(({ uci, sound }, i) => {
+      const brush = uci === found ? 'found' : `${sound ? 'pass' : 'fail'}${i + 1}`;
       return { ...arrow(uci, brush), customSvg: rankNumber(i + 1, uci, brush, this.orientation) };
     });
     // Last, so it draws over the fan of blue rather than under it.
