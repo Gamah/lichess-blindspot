@@ -422,6 +422,19 @@ button.danger:hover {
   font-size: 0.9rem;
 }
 
+/* chessground marks the checked king's square but ships no styling for it —
+   lila supplies its own — so without this the board silently says nothing when
+   a king is in check. */
+.cg-wrap square.check {
+  background: radial-gradient(
+    ellipse at center,
+    rgb(255 0 0 / 100%) 0%,
+    rgb(231 0 0 / 100%) 25%,
+    rgb(169 0 0 / 0%) 89%,
+    rgb(158 0 0 / 0%) 100%
+  );
+}
+
 /* Promotion chooser: over the board, because that is where the pawn is. */
 
 .board-wrap {

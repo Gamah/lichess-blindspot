@@ -67,7 +67,11 @@ export class App {
       if (!e.persisted) this.pipeline?.stop();
     });
     const preset = new URLSearchParams(location.search).get('u') ?? recentUsernames()[0] ?? '';
-    this.renderLanding(preset);
+    // Someone who has been here before came back to solve, not to type their
+    // own name again. The landing screen is still one click away, on Switch
+    // player, and any failure drops back to it with the name filled in.
+    if (preset) void this.begin(preset);
+    else this.renderLanding('');
   }
 
   // --- screens ------------------------------------------------------------

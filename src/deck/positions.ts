@@ -50,6 +50,11 @@ export function applyUci(fen: string, uci: string): { san: string; after: string
   return { san, after: makeFen(pos.toSetup()) };
 }
 
+/** Is the side to move in check? The board wants to say so. */
+export function isCheck(fen: string): boolean {
+  return Chess.fromSetup(parseFen(fen).unwrap()).unwrap().isCheck();
+}
+
 /** Legal destinations for chessground, keyed by origin square. */
 export function dests(fen: string): Map<string, string[]> {
   return chessgroundDests(Chess.fromSetup(parseFen(fen).unwrap()).unwrap());

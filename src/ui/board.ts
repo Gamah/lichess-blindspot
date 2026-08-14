@@ -8,7 +8,7 @@ import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
 import type { Key } from '@lichess-org/chessground/types';
 
-import { applyUci, dests } from '../deck/positions.ts';
+import { applyUci, dests, isCheck } from '../deck/positions.ts';
 import type { Color } from '../analysis/winningChances.ts';
 
 export interface PlayedMove {
@@ -47,7 +47,7 @@ export class Board {
       orientation,
       turnColor: orientation,
       lastMove: undefined,
-      check: undefined,
+      check: isCheck(fen),
       movable: {
         color: movable ? orientation : undefined,
         dests: movable ? (dests(fen) as Map<Key, Key[]>) : new Map(),
@@ -80,7 +80,11 @@ export class Board {
       const played = applyUci(at, uci);
       if (!played) return;
       this.cg.move(uci.slice(0, 2) as Key, uci.slice(2, 4) as Key);
-      this.cg.set({ fen: played.after, turnColor: turnOf(played.after) });
+      this.cg.set({
+        fen: played.after,
+        turnColor: turnOf(played.after),
+        check: isCheck(played.after),
+      });
       at = played.after;
       await sleep(delay);
     }
@@ -101,7 +105,11 @@ export class Board {
       played = applyUci(this.fen, full);
     }
     if (!played) return this.reset();
-    this.cg.set({ fen: played.after, turnColor: turnOf(played.after) });
+    this.cg.set({
+      fen: played.after,
+      turnColor: turnOf(played.after),
+      check: isCheck(played.after),
+    });
     this.freeze();
     this.onMove({ uci: full, san: played.san, after: played.after });
   }
