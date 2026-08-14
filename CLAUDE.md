@@ -362,6 +362,16 @@ The three causes (no cross-origin isolation, a service worker that never took
 control, a dropped net download) are indistinguishable from the outside, which
 is why the link carries the numbers.
 
+**The move played in the game is drawn in red from the start**, not held back
+until the solve is over. It is the one answer `classify` can never accept, so
+hiding it does not make the position harder — it makes it longer, for exactly
+the people who do not remember the game being shown, which is most of them.
+`Board.mark` holds it across every `set`, because a wrong answer re-sets the
+position and would otherwise wipe it. That is the single exception to the rule
+at the top of `ui/app.ts`; everything else about where a position came from
+still waits for `renderReveal`. It is meant to become a setting, default on —
+it is not one yet, so don't infer one from the code.
+
 The reveal draws the ranking: `Board.reveal` puts numbered arrows on the board
 **as it stands** — the position after the move that ended the solve, not the one
 the puzzle handed out — so the arrows leave squares their pieces have left,
@@ -371,6 +381,20 @@ the game's move in red on top. Numbered because five shades of one blue is not
 a ranking anyone can read, and chessground has no per-shape opacity, so a fade
 has to be a brush per step — merged into the defaults by its deep-merging
 config.
+
+The numbers are a `customSvg`, not chessground's `label`: `renderLabel`
+hardcodes a white-outlined disc behind the text, and five of those read as a
+row of buttons rather than a ranking. `center: 'label'` puts the box where that
+disc was — the junction of shaft and arrowhead, i.e. *under* the triangle — so
+`rankNumber` nudges half an arrowhead further along, which is why it needs the
+move's direction and the board orientation. Drawn at full opacity whatever the
+brush does, so rank 5 is still readable at 0.28.
+
+**Draw anything that must survive as an auto-shape.** Pressing the board runs
+chessground's `drawClear`, which empties `drawable.shapes` but leaves
+`autoShapes` alone — so a reveal drawn with `setShapes` vanishes the moment
+someone touches the board to look at it. That was a real bug, found by
+touching the board.
 
 **How an existing user is told a setting exists.** The same shape as the schema
 reset, and the only other thing in the app that gates the front door:

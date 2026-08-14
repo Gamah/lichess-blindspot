@@ -46,6 +46,12 @@ export class Board {
   private fen = '';
   /** Bumps per position shown, so a slow intro cannot land on the next puzzle. */
   private presenting = 0;
+  /**
+   * A move to keep drawn for as long as this position is up — the move played
+   * in the game. Held here rather than drawn once, because every `set` clears
+   * the board's shapes and a wrong answer re-sets the position.
+   */
+  private marked: string | undefined;
   private orientation: Color = 'white';
 
   private readonly el: HTMLElement;
@@ -77,6 +83,8 @@ export class Board {
     pause = 700,
   ): Promise<void> {
     const token = ++this.presenting;
+    // Whatever was marked belonged to the last position.
+    this.marked = undefined;
     if (!intro) return this.set(fen, orientation, true);
 
     this.set(intro.fen, orientation, false);
@@ -105,6 +113,23 @@ export class Board {
       },
     });
     this.cg.setShapes([]);
+    this.applyMarks();
+  }
+
+  /**
+   * Draw and keep drawing a move on this position. Used for the move played in
+   * the game, which is shown from the start rather than held back: it is the
+   * one answer that is always wrong, and a person who does not happen to
+   * remember their own game would otherwise spend guesses rediscovering it.
+   * Knowing what failed is the premise of the exercise, not a spoiler.
+   */
+  mark(uci: string | undefined): void {
+    this.marked = uci;
+    this.applyMarks();
+  }
+
+  private applyMarks(): void {
+    this.cg.setAutoShapes(this.marked ? [arrow(this.marked, 'red')] : []);
   }
 
   /**
@@ -112,7 +137,7 @@ export class Board {
    * position, once solving it is over and the context is allowed back.
    */
   drawMove(uci: string, brush = 'red'): void {
-    this.cg.setShapes([arrow(uci, brush)]);
+    this.cg.setAutoShapes([arrow(uci, brush)]);
   }
 
   /**
@@ -130,13 +155,18 @@ export class Board {
    * ranking nobody can read.
    */
   reveal(top: readonly string[], played?: string, found?: string): void {
-    const shapes: DrawShape[] = top.slice(0, 5).map((uci, i) => ({
-      ...arrow(uci, uci === found ? 'found' : `rank${i + 1}`),
-      label: { text: String(i + 1) },
-    }));
+    const shapes: DrawShape[] = top.slice(0, 5).map((uci, i) => {
+      const brush = uci === found ? 'found' : `rank${i + 1}`;
+      return { ...arrow(uci, brush), customSvg: rankNumber(i + 1, uci, brush, this.orientation) };
+    });
     // Last, so it draws over the fan of blue rather than under it.
     if (played) shapes.push(arrow(played, 'red'));
-    this.cg.setShapes(shapes);
+    // **Auto**-shapes, not shapes. Pressing anywhere on the board runs
+    // chessground's `drawClear`, which empties `drawable.shapes` — so a reveal
+    // drawn as ordinary shapes vanishes the moment the person touches the
+    // board to look at it. `autoShapes` is the channel lila draws engine
+    // arrows on, and it survives.
+    this.cg.setAutoShapes(shapes);
   }
 
   /** Rewind to the position we handed out, after a wrong move. */
@@ -225,6 +255,59 @@ export class Board {
       (this.el.querySelector('.cg-wrap') ?? this.el).appendChild(overlay);
     });
   }
+}
+
+/**
+ * The rank, drawn on the arrowhead itself.
+ *
+ * Not chessground's `label`, which hardcodes a white-outlined disc behind the
+ * text — five of those is a row of buttons rather than a ranking. `customSvg`
+ * gives us the glyph on its own, and `center: 'label'` puts the 1×1 box's
+ * middle exactly where that disc was: the junction of shaft and arrowhead, so
+ * the number sat under the triangle rather than on it. Hence the nudge — half
+ * an arrowhead further along the arrow, which needs the direction, which needs
+ * the board orientation.
+ *
+ * Drawn at full opacity whatever the arrow's brush does, so rank 5 stays
+ * readable at 0.28. White with a thick same-coloured outline underneath it, so
+ * it reads on the triangle and on a bare square alike.
+ */
+function rankNumber(
+  rank: number,
+  uci: string,
+  brush: string,
+  orientation: Color,
+): DrawShape['customSvg'] {
+  const [dx, dy] = towards(uci, orientation);
+  const x = 50 + dx * HEAD_NUDGE;
+  const y = 50 + dy * HEAD_NUDGE;
+  const colour = RANK_BRUSHES[brush]?.color ?? '#003088';
+  return {
+    center: 'label',
+    html:
+      `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" ` +
+      `dominant-baseline="central" font-family="Noto Sans, system-ui, sans-serif" ` +
+      `font-size="46" font-weight="700" paint-order="stroke" stroke="${colour}" ` +
+      `stroke-width="14" stroke-linejoin="round" fill="#fff">${rank}</text>`,
+  };
+}
+
+/** ~half an arrowhead, in the 100-unit box `customSvg` draws into. */
+const HEAD_NUDGE = 26;
+
+/**
+ * Unit vector from a move's origin to its destination, in screen terms: x
+ * grows right, y grows *down*, and flipping the board flips both.
+ */
+function towards(uci: string, orientation: Color): [number, number] {
+  const file = (sq: string) => sq.charCodeAt(0) - 97;
+  const rank = (sq: string) => Number(sq[1]) - 1;
+  const flip = orientation === 'black' ? -1 : 1;
+  const dx = (file(uci.slice(2, 4)) - file(uci.slice(0, 2))) * flip;
+  // Rank 8 is at the top for white, so a move up the board is negative y.
+  const dy = -(rank(uci.slice(2, 4)) - rank(uci.slice(0, 2))) * flip;
+  const mag = Math.hypot(dx, dy) || 1;
+  return [dx / mag, dy / mag];
 }
 
 const arrow = (uci: string, brush: string): DrawShape => ({

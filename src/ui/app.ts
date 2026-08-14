@@ -2,8 +2,14 @@
 //
 // The rule this file exists to keep: until a position is solved, the screen
 // says nothing about where it came from. No game link, no opponent, no date,
-// no ply, no eval, no "you played". Everything of that kind lives in
-// `renderReveal`, which is only ever called after the solve is done.
+// no ply, no eval. Everything of that kind lives in `renderReveal`, which is
+// only ever called after the solve is done.
+//
+// One deliberate exception: the move played in the game is drawn in red from
+// the start. It is the one answer that is always wrong, so withholding it does
+// not make the puzzle harder — it makes it longer, for exactly the people who
+// do not remember the game they are being shown. That is a hint about what
+// failed, not about what works.
 
 import { Deck } from '../app/deck.ts';
 import { Pipeline, type Progress } from '../app/pipeline.ts';
@@ -105,9 +111,9 @@ export class App {
         <p>Lichess' <em>Learn from your mistakes</em> walks you through one game's mistakes in
           order, with the game around them — it reads as review, and you already know something
           went wrong. Blindspot takes the same positions, strips them, and shuffles them across
-          your recent games. No opponent, no date, no move number, no eval bar, no “you played
-          Qh5”. Just a position, from your side of the board, and no clue whether the answer is a
-          combination or a quiet pawn move.</p>
+          your recent games. No opponent, no date, no move number, no eval bar. Just a position,
+          from your side of the board, one red arrow showing the move that lost it, and no clue
+          whether the answer is a combination or a quiet pawn move.</p>
 
         <form class="start">
           <input name="username" list="recent" placeholder="lichess username" autocomplete="off"
@@ -147,7 +153,11 @@ export class App {
             <h2>Judged on merit, not on one answer</h2>
             <p>A move is right if it doesn't throw away winning chances — not if it matches one
               blessed solution. Quiet positional saves count. The move you actually played never
-              does.</p>
+              does. Difficulty can narrow that to the engine's top five or top two, and once a
+              position is solved its whole ranking goes on the board as numbered arrows. What
+              those are worth is written up in the <a
+              href="https://github.com/Gamah/lichess-blindspot#difficulty-and-the-arrows"
+              target="_blank" rel="noopener">readme</a>.</p>
           </li>
         </ol>
 
@@ -190,30 +200,59 @@ export class App {
     if (this.notBefore > Date.now()) this.countdown = setInterval(paint, 1000);
   }
 
+  /**
+   * The wait before the board opens, which on a first visit or a catch-up is
+   * minutes rather than seconds. Two rules learned by watching it:
+   *
+   * - The bar measures **progress towards being able to start**, not towards
+   *   all the work being done. Those are wildly different when a long history
+   *   is being caught up, and only the first one ends when the board appears.
+   * - It has to move *within* a game, not once per game. The gate is five
+   *   games, so a bar stepping in fifths moved twice and then the board was
+   *   there — which is indistinguishable from a bar that is broken. The
+   *   pipeline already reports a fraction through the game it is on; that is
+   *   what makes it continuous.
+   */
   private renderLoading(): void {
     const done = this.progress.gamesDone;
     const found = this.deck.unsolvedCount();
     const boot = this.booting;
-    const bar = boot?.download !== undefined ? boot.download : Math.min(1, done / GATE_GAMES);
+    const within = this.progress.current ?? 0;
+    // Either gate can open the board, so the bar tracks whichever is closer.
+    const ready = Math.min(1, Math.max(found / GATE_PUZZLES, (done + within) / GATE_GAMES));
+    // The net download is its own phase and its own bar; the status line above
+    // says which of the two is being shown.
+    const bar = boot?.download ?? ready;
+    const backlog = this.progress.backlog ?? 0;
     this.root.innerHTML = `
       <main class="loading">
         <h1>Blindspot</h1>
         <p class="status">${escape(
-          boot?.message ?? (this.progress.backlog ? 'Ranking your positions' : 'Analysing your games'),
+          boot?.message ?? (backlog ? 'Working out the best moves' : 'Analysing your games'),
         )}</p>
         ${this.notice ? `<p class="warn">${escape(this.notice)}</p>` : ''}
         ${engineNag(this.isolation, this.engineFailed)}
         ${batteryWarning()}
         <div class="bar"><div class="fill" style="width:${Math.round(bar * 100)}%"></div></div>
-        <p class="detail">${done} game${done === 1 ? '' : 's'} analysed · ${found} position${
-          found === 1 ? '' : 's'
-        } found</p>
+        <p class="detail">${
+          boot?.download !== undefined
+            ? `Neural net, ${Math.round(boot.download * 100)}% — about 15 MB, once, then never again`
+            : `${done} game${done === 1 ? '' : 's'} done · ${found} position${
+                found === 1 ? '' : 's'
+              } ready · the board opens at ${GATE_PUZZLES}`
+        }</p>
         <p class="hint">${
-          this.progress.backlog
-            ? `Working out the engine's five best moves for positions already stored — ${this.progress.backlog} game${
-                this.progress.backlog === 1 ? '' : 's'
-              } to go. Nothing is being downloaded again; this is the processor, and it is supposed to be busy.`
-            : 'Games lichess has already analysed skip the slow half; every position is then searched here to rank its alternatives, which is slower and warmer and deliberate.'
+          backlog
+            ? `Every position is searched before you are shown it, so that finding the move means
+               the same thing each time you meet it. ${backlog} stored game${
+                 backlog === 1 ? '' : 's'
+               } still to go — nothing is being downloaded again, this is the processor doing the
+               work, and it is one-time per game. The board opens as soon as there is enough to
+               solve and the rest carries on behind it.`
+            : `Games lichess has already analysed skip the slow half. Every position is then
+               searched here to work out the engine's best few moves in it, which is the slow,
+               warm, deliberate part — and is what lets a position be judged the same way every
+               time it comes round.`
         }</p>
       </main>
       ${footer()}`;
@@ -694,9 +733,14 @@ export class App {
     await this.board?.present(puzzle.fen, puzzle.pov, puzzle.intro);
     // A later puzzle may have taken over while the opponent's move played out.
     if (this.solve?.puzzle.id !== puzzle.id) return;
+    // The move played in the game, from the start. It is the one answer that
+    // can never be right, so hiding it only costs guesses to someone who does
+    // not remember the game — which is most people, and is rather the point.
+    this.board?.mark(puzzle.played.uci);
     this.setFeedback(
       `<strong>${puzzle.pov === 'white' ? 'White' : 'Black'} to play.</strong>
-       <span>Find the move. There is a better one than the one that was played.</span>`,
+       <span>The red arrow is what was played here, and it was a mistake. Find something
+       better.</span>`,
     );
   }
 
@@ -852,16 +896,7 @@ export class App {
       <p class="line"><span class="label">Swing</span> ${escape(
         `${showEval(puzzle.prevEval)} → ${showEval(puzzle.eval)}`,
       )}${puzzle.judgment ? ` · ${escape(puzzle.judgment)}` : ''}</p>
-      ${game ? gameLine(game, puzzle, move) : ''}
-      ${
-        puzzle.alts.length > 1
-          ? `<p class="line dim">The numbered arrows are the engine's top ${puzzle.alts.length}
-             from this position, best first, worked out before you were shown it — so the same
-             move gets the same verdict every time it comes round, on any device. It is a real
-             search but not an exhaustive one: the first move or two are settled, the tail is not,
-             and a longer search will sometimes reorder it. Red is what the game played.</p>`
-          : ''
-      }`);
+      ${game ? gameLine(game, puzzle, move) : ''}`);
   }
 
   private renderExhausted(): void {
