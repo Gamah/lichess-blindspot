@@ -40,6 +40,12 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - A request with **no User-Agent gets 404**, not 403 — lila's `NoCrawlers`
   guard. Browsers always send one, so this only ever bites dev scripts and
   curl, but the status code makes it look like the user doesn't exist.
+- **The games export appears to be blocked per IP, not merely rate limited.**
+  This host gets `429` for every request, always; a home connection got one on
+  its very first export while the same build worked immediately from a phone on
+  a mobile IP (2026-08-14). Treat a persistent 429 as "this address is not
+  welcome", not as "we are asking too fast" — retrying harder makes it worse,
+  and there is nothing to fix in the request.
 - Exceeding the one-concurrent-export limit returns
   `429 {"error":"Please only run 1 request(s) at a time"}`. Distinct from the
   per-second rate limit and worth reporting to the user differently.
@@ -159,6 +165,15 @@ tolerate one reload; do not assert isolation at startup.
 `public/_headers` and the vite dev-server headers stay regardless: they make
 dev match the isolated case, and they make a move to Cloudflare Pages a one-line
 switch if the worker proves flaky.
+
+**Register, active, and controlling are three different things.**
+`navigator.serviceWorker.register()` resolves at the first; only the third
+gets the page the headers. Reloading before the worker controls anything
+produces a second uncontrolled load, and then the one-reload guard gives up and
+the visit has no engine at all. `ensureIsolation` waits for
+`serviceWorker.ready` and then for a `controllerchange`, with a timeout, before
+it reloads. This is the bug that made the deployed build say "no engine" on a
+phone.
 
 `public/coi-serviceworker.js` deliberately touches **same-origin responses
 only**. Cross-origin ones — the lichess API, the neural net — already carry the

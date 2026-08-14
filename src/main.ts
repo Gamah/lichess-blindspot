@@ -6,7 +6,8 @@ import './style.css';
 import { App } from './ui/app.ts';
 import { ensureIsolation } from './isolation.ts';
 
-// One reload, at most, before the app starts: see isolation.ts.
-void ensureIsolation().then(() => {
-  new App(document.getElementById('app')!).start();
+// One reload, at most, before the app starts: see isolation.ts. The report is
+// handed to the app so that "the engine is unavailable" can say why.
+void ensureIsolation().then(report => {
+  new App(document.getElementById('app')!, report).start();
 });

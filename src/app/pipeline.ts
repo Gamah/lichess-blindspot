@@ -10,7 +10,7 @@ import { replay, type ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { OpeningBook } from '../lichess/explorer.ts';
-import { fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
+import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
 import { purgeIfTight, type Profile } from '../storage/db.ts';
 
 export interface PipelineEvents {
@@ -19,6 +19,8 @@ export interface PipelineEvents {
   /** Games finished this session, and the game being worked on right now. */
   onProgress: (p: Progress) => void;
   onError: (e: Error) => void;
+  /** lichess said "busy"; we are waiting `delayMs` and trying once more. */
+  onRetry?: (e: ExportError, delayMs: number) => void;
 }
 
 export interface Progress {
@@ -33,6 +35,26 @@ export interface Progress {
 
 const BATCH = 20;
 
+/**
+ * lichess allows **one games export per IP at a time**, and the callers here
+ * are hair-triggered: the deck asks for more after every solve it finishes
+ * thin, and at the end of the deck, on every click. Without a governor that is
+ * a burst, and a burst against a concurrency limit of one is a 429.
+ *
+ * So: no two exports closer together than this, whoever asks.
+ */
+const EXPORT_GAP = 30_000;
+/** And after lichess has said no twice, leave it alone for considerably longer. */
+const BACKOFF = 120_000;
+/** How long a transient "another export is running" is given to clear. */
+const RETRY_DELAY = 8_000;
+
+/** Just the storage this needs, so tests can hand it something that isn't IndexedDB. */
+export type Store = Pick<
+  Profile,
+  'username' | 'meta' | 'setMeta' | 'putGame' | 'putPuzzles' | 'purgeGames'
+>;
+
 export class Pipeline {
   private queue: ExportedGame[] = [];
   private running = false;
@@ -41,33 +63,92 @@ export class Pipeline {
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private abort = new AbortController();
   private readonly book = new OpeningBook();
+  private lastExportAt = -Infinity;
+  private blockedUntil = 0;
+  private exhausted = false;
+  /** Injectable so the governor can be tested without waiting 30 real seconds. */
+  private readonly now: () => number;
 
-  private readonly profile: Profile;
+  private readonly profile: Store;
   /** Boots on first use: a game lichess already analysed needs no engine at all. */
   private readonly engine: () => Promise<Analyser>;
   private readonly events: PipelineEvents;
 
-  constructor(profile: Profile, engine: () => Promise<Analyser>, events: PipelineEvents) {
+  constructor(
+    profile: Store,
+    engine: () => Promise<Analyser>,
+    events: PipelineEvents,
+    now: () => number = Date.now,
+  ) {
     this.profile = profile;
     this.engine = engine;
     this.events = events;
+    this.now = now;
   }
 
-  /** Fetch a batch and work through it. Safe to call again; it won't double up. */
+  /**
+   * Fetch a batch and work through it. Safe to call as often as you like — it
+   * won't double up, won't fetch inside the gap, and won't ask again once
+   * lichess has run out of games to give.
+   */
   async run(): Promise<void> {
-    if (this.running) return;
+    if (this.running || !this.mayFetch()) return;
     this.running = true;
     try {
-      await this.fetchBatch();
+      this.lastExportAt = this.now();
+      await this.fetchWithRetry();
       await this.drain();
       // Between batches, not during: purging mid-analysis would drop a payload
       // the queue still holds a reference to.
-      await purgeIfTight(this.profile);
+      await purgeIfTight(this.profile as Profile);
     } catch (e) {
-      if (!(e instanceof Aborted)) this.events.onError(e as Error);
+      if (e instanceof Aborted) return;
+      // Past the retry, a 429 means back off rather than let the next caller
+      // through here walk straight into the same limit.
+      if (isBusy(e)) this.blockedUntil = this.now() + BACKOFF;
+      this.events.onError(e as Error);
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * The concurrency 429 is usually transient — a reload that left the previous
+   * export still streaming, or a second tab — and it clears in seconds. Being
+   * thrown back to the landing screen for that is a much worse answer than
+   * waiting a moment, so we wait a moment.
+   */
+  private async fetchWithRetry(): Promise<void> {
+    try {
+      await this.fetchBatch();
+    } catch (e) {
+      if (!isBusy(e)) throw e;
+      this.events.onRetry?.(e as ExportError, RETRY_DELAY);
+      await this.sleep(RETRY_DELAY);
+      if (this.abort.signal.aborted) throw new Aborted('cancelled');
+      this.lastExportAt = this.now();
+      await this.fetchBatch();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /** Why the deck is not filling, for the UI to say out loud. */
+  status(): 'idle' | 'working' | 'waiting' | 'exhausted' {
+    if (this.running) return 'working';
+    if (this.exhausted) return 'exhausted';
+    return this.mayFetch() ? 'idle' : 'waiting';
+  }
+
+  /** When the next fetch becomes possible, in ms from now. 0 if it already is. */
+  waitMs(): number {
+    return Math.max(0, Math.max(this.blockedUntil, this.lastExportAt + EXPORT_GAP) - this.now());
+  }
+
+  private mayFetch(): boolean {
+    return !this.exhausted && this.waitMs() === 0;
   }
 
   pause(): void {
@@ -98,12 +179,14 @@ export class Pipeline {
     const meta = await this.profile.meta();
     const seen = new Set([...meta.analysed, ...meta.fetched]);
     let oldest: number | undefined;
+    let total = 0;
     const games: ExportedGame[] = [];
     for await (const game of fetchGames(this.profile.username, {
       max: BATCH,
       ...(meta.until !== undefined ? { until: meta.until } : {}),
       signal: this.abort.signal,
     })) {
+      total++;
       oldest = Math.min(oldest ?? game.createdAt, game.createdAt);
       if (seen.has(game.id)) continue;
       games.push(game);
@@ -115,6 +198,9 @@ export class Pipeline {
       ...meta,
       ...(oldest !== undefined ? { until: oldest - 1 } : {}),
     });
+    // No games at all means we have paged back past the first one they ever
+    // played. Asking again would get the same nothing, forever.
+    if (total === 0) this.exhausted = true;
     this.queue.push(...games);
     this.emit({ gamesPending: this.queue.length });
   }
@@ -212,3 +298,7 @@ export class Pipeline {
 /** retroCtrl's guard: standard chess, and before the middlegame if lichess said where that is. */
 const inOpening = (game: ExportedGame, ply: number): boolean =>
   game.variant === 'standard' && (game.division?.middle === undefined || ply < game.division.middle);
+
+/** The two 429s both mean "not now"; only the sentence we show differs. */
+const isBusy = (e: unknown): boolean =>
+  e instanceof ExportError && (e.kind === 'rateLimit' || e.kind === 'concurrent');

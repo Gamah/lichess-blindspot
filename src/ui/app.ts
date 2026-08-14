@@ -10,10 +10,11 @@ import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
-import type { ExportedGame } from '../lichess/export.ts';
+import { ExportError, type ExportedGame } from '../lichess/export.ts';
 import { Solve } from '../solve/retro.ts';
 import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
 import { recentUsernames, rememberUsername } from '../storage/prefs.ts';
+import type { IsolationReport } from '../isolation.ts';
 import { Board, type PlayedMove } from './board.ts';
 
 /** Unlock the board once this many games are through, or this many puzzles exist. */
@@ -23,6 +24,12 @@ const GATE_PUZZLES = 5;
 const REFILL_AT = 5;
 /** How long the engine gets to judge a move the player invented. */
 const JUDGE_MOVETIME = 1000;
+/**
+ * After lichess has said "busy" we hold the front door too. The pipeline backs
+ * itself off, but typing the name again builds a fresh one, so the wait has to
+ * live out here as well or the retry button becomes a way round it.
+ */
+const BUSY_WAIT = 60_000;
 
 export class App {
   private profile: Profile | undefined;
@@ -36,14 +43,25 @@ export class App {
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private booting: BootProgress | undefined;
   private unlocked = false;
+  /** Set when lichess asks us to wait; no export before this. */
+  private notBefore = 0;
+  private notice: string | undefined;
+  private countdown: ReturnType<typeof setInterval> | undefined;
 
   private readonly root: HTMLElement;
+  private readonly isolation: IsolationReport;
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, isolation: IsolationReport) {
     this.root = root;
+    this.isolation = isolation;
   }
 
   start(): void {
+    // Leaving an export streaming holds lichess' one-per-IP slot open, and the
+    // next thing this page does on the way back is start another one.
+    addEventListener('pagehide', e => {
+      if (!e.persisted) this.pipeline?.stop();
+    });
     const preset = new URLSearchParams(location.search).get('u') ?? recentUsernames()[0] ?? '';
     this.renderLanding(preset);
   }
@@ -62,7 +80,7 @@ export class App {
           <button type="submit">Find my blindspots</button>
         </form>
         ${error ? `<p class="error">${escape(error)}</p>` : ''}
-        ${isolationWarning()}
+        ${isolationWarning(this.isolation)}
       </main>
       ${footer()}`;
     const form = this.root.querySelector('form.start') as HTMLFormElement;
@@ -71,6 +89,31 @@ export class App {
       const username = (new FormData(form).get('username') as string).trim();
       if (username) void this.begin(username);
     });
+    this.tickBusyButton();
+  }
+
+  /**
+   * While lichess wants us to wait, the button says how long and does nothing.
+   * The wait is the point — a retry button that retries straight into the same
+   * limit is how one 429 becomes five.
+   */
+  private tickBusyButton(): void {
+    clearInterval(this.countdown);
+    const button = this.root.querySelector('form.start button') as HTMLButtonElement | null;
+    if (!button) return;
+    const paint = () => {
+      const left = Math.ceil((this.notBefore - Date.now()) / 1000);
+      if (left <= 0) {
+        clearInterval(this.countdown);
+        button.disabled = false;
+        button.textContent = 'Find my blindspots';
+        return;
+      }
+      button.disabled = true;
+      button.textContent = `lichess is busy — ${left}s`;
+    };
+    paint();
+    if (this.notBefore > Date.now()) this.countdown = setInterval(paint, 1000);
   }
 
   private renderLoading(): void {
@@ -82,6 +125,7 @@ export class App {
       <main class="loading">
         <h1>Blindspot</h1>
         <p class="status">${escape(boot?.message ?? 'Analysing your games')}</p>
+        ${this.notice ? `<p class="warn">${escape(this.notice)}</p>` : ''}
         <div class="bar"><div class="fill" style="width:${Math.round(bar * 100)}%"></div></div>
         <p class="detail">${done} game${done === 1 ? '' : 's'} analysed · ${found} position${
           found === 1 ? '' : 's'
@@ -190,7 +234,9 @@ export class App {
   // --- flow ---------------------------------------------------------------
 
   private async begin(username: string): Promise<void> {
+    if (Date.now() < this.notBefore) return this.tickBusyButton();
     rememberUsername(username);
+    this.notice = undefined;
     const profile = new Profile(username);
     this.profile = profile;
     this.renderLoading();
@@ -209,6 +255,10 @@ export class App {
         this.maybeUnlock();
       },
       onError: e => this.fail(e),
+      onRetry: (e, delayMs) => {
+        this.notice = `${e.message} Trying again in ${Math.round(delayMs / 1000)}s.`;
+        if (!this.unlocked) this.renderLoading();
+      },
     });
 
     void this.pipeline.run().then(() => this.maybeUnlock(true));
@@ -387,6 +437,8 @@ export class App {
   }
 
   private fail(e: Error): void {
+    if (e instanceof ExportError && (e.kind === 'rateLimit' || e.kind === 'concurrent'))
+      this.notBefore = Date.now() + BUSY_WAIT;
     if (this.unlocked) {
       this.setFeedback(`<strong class="bad">${escape(e.message)}</strong>`);
     } else {
@@ -445,11 +497,22 @@ function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
        rel="noopener">move ${move} vs ${escape(name)}</a>, ${escape(when)}</p>`;
 }
 
-function isolationWarning(): string {
-  if (crossOriginIsolated) return '';
-  return `<p class="warn">The multithreaded engine is not available on this load
-    (no cross-origin isolation yet). Reload once and it should be — games lichess has
-    already analysed work either way.</p>`;
+/**
+ * Isolation failing is not a detail: without it there is no engine, so games
+ * lichess has not already analysed produce nothing at all. Say which piece is
+ * missing rather than "unavailable", because the three causes have three
+ * different answers.
+ */
+function isolationWarning(report: IsolationReport): string {
+  if (report.isolated) return '';
+  const detail = report.problem
+    ? escape(report.problem)
+    : 'The page is not cross-origin isolated.';
+  return `<p class="warn"><strong>No engine on this load.</strong> ${detail}
+    Games lichess has already analysed still work; the rest need the engine.
+    <span class="dim">isolated: ${report.isolated} · service worker: ${
+      report.controlled ? 'in control' : 'not in control'
+    } · SharedArrayBuffer: ${report.sharedArrayBuffer ? 'yes' : 'no'}</span></p>`;
 }
 
 function footer(): string {
