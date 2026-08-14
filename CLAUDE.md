@@ -31,6 +31,18 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - `division=true` gives `{middle, end}` plies, used to skip opening-book moves.
 - Masters explorer is `https://explorer.lichess.ovh/masters?fen=...`, CORS-open,
   no auth.
+- A request with **no User-Agent gets 404**, not 403 — lila's `NoCrawlers`
+  guard. Browsers always send one, so this only ever bites dev scripts and
+  curl, but the status code makes it look like the user doesn't exist.
+- Exceeding the one-concurrent-export limit returns
+  `429 {"error":"Please only run 1 request(s) at a time"}`. Distinct from the
+  per-second rate limit and worth reporting to the user differently.
+
+**Not yet verified against the live API.** Everything above is read from lila
+source. The dev host these notes were written on could not complete a single
+request to the games export (permanently 429, shared egress IP), so the field
+semantics have never been checked against a real response. Do that before
+building further on them.
 
 ## Ported code
 
