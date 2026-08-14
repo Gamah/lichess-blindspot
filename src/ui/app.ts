@@ -46,7 +46,10 @@ export class App {
   /** Set when lichess asks us to wait; no export before this. */
   private notBefore = 0;
   private notice: string | undefined;
+  /** The deck emptied and we are waiting on the pipeline to hand us more. */
+  private awaitingPuzzles = false;
   private countdown: ReturnType<typeof setInterval> | undefined;
+  private exhaustedTimer: ReturnType<typeof setTimeout> | undefined;
 
   private readonly root: HTMLElement;
   private readonly isolation: IsolationReport;
@@ -96,8 +99,9 @@ export class App {
         <ol class="steps">
           <li>
             <h2>Your games, from lichess</h2>
-            <p>The last 20 come straight from the public API. No account, no token, nothing to
-              authorise.</p>
+            <p>Straight from the public API — no account, no token, nothing to authorise. Twenty
+              at a time, and when you work through those it reaches further back into your
+              history, for as long as you have games.</p>
           </li>
           <li>
             <h2>Analysed here, in this tab</h2>
@@ -291,6 +295,11 @@ export class App {
       onPuzzles: p => {
         this.deck.add(p);
         this.maybeUnlock();
+        // The deck ran dry and we told them to wait. Don't make them click.
+        if (this.awaitingPuzzles && this.deck.unsolvedCount()) {
+          this.awaitingPuzzles = false;
+          void this.nextPuzzle();
+        }
       },
       onProgress: p => {
         this.progress = p;
@@ -326,6 +335,10 @@ export class App {
 
   private async nextPuzzle(): Promise<void> {
     const puzzle = this.deck.next();
+    if (puzzle) {
+      this.awaitingPuzzles = false;
+      clearTimeout(this.exhaustedTimer);
+    }
     if (!puzzle) {
       this.renderExhausted();
       void this.refill();
@@ -449,12 +462,33 @@ export class App {
   }
 
   private renderExhausted(): void {
-    this.setFeedback(
-      `<strong>That is the deck.</strong>
-       <span>Fetching more games — leave this open and they will appear.</span>`,
-    );
+    this.awaitingPuzzles = true;
     this.board?.freeze();
     this.toggleNext(true);
+    this.paintExhausted();
+  }
+
+  /**
+   * Four different things can be true when the deck is empty, and they call for
+   * four different sentences — particularly "there are no more games", which is
+   * the only one that means stop waiting.
+   */
+  private paintExhausted(): void {
+    if (!this.awaitingPuzzles) return;
+    const pipeline = this.pipeline;
+    const status = pipeline?.status() ?? 'idle';
+    const message =
+      status === 'exhausted'
+        ? '<span>That is every game lichess has for you. Come back after a few more.</span>'
+        : status === 'working'
+          ? '<span>Analysing older games — the next position will appear here by itself.</span>'
+          : status === 'waiting'
+            ? `<span>Fetching older games in ${Math.ceil((pipeline?.waitMs() ?? 0) / 1000)}s.
+                 lichess allows one export at a time, so this waits rather than pesters.</span>`
+            : '<span>Fetching older games — the next position will appear here by itself.</span>';
+    this.setFeedback(`<strong>That is the deck, for now.</strong> ${message}`);
+    clearTimeout(this.exhaustedTimer);
+    if (status !== 'exhausted') this.exhaustedTimer = setTimeout(() => this.paintExhausted(), 1000);
   }
 
   // --- small bits ---------------------------------------------------------

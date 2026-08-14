@@ -39,11 +39,14 @@ const events = () => {
   };
 };
 
-/** Counts export requests and answers with whatever the test wants. */
+/** Counts export requests, records their URLs, and answers as the test wants. */
 function stubFetch(reply: (n: number) => Response) {
   const real = globalThis.fetch;
-  const state = { calls: 0 };
-  globalThis.fetch = (async () => reply(++state.calls)) as typeof fetch;
+  const state = { calls: 0, urls: [] as string[] };
+  globalThis.fetch = (async (input: URL | RequestInfo) => {
+    state.urls.push(String(input));
+    return reply(++state.calls);
+  }) as typeof fetch;
   return {
     state,
     restore: () => {
@@ -116,6 +119,42 @@ test('a 429 that survives the retry backs off hard', async () => {
     assert.equal(pipeline.status(), 'waiting');
     await pipeline.run();
     assert.equal(fetch.state.calls, 2, 'no third request inside the backoff');
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('each batch reaches further back, so the deck is not capped at 20 games', async () => {
+  // The export is newest-first and `until` is a "played before this" filter, so
+  // paging backwards means asking again from just before the oldest game we
+  // have. Without it every batch would be the same 20 games.
+  const batch = (ids: string[], createdAt: number) =>
+    new Response(
+      ids
+        .map(id =>
+          JSON.stringify({
+            id,
+            createdAt,
+            variant: 'standard',
+            players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+            moves: 'e4 e5 Nf3 Nc6',
+          }),
+        )
+        .join('\n'),
+    );
+  const fetch = stubFetch(n => (n === 1 ? batch(['aaa', 'bbb'], 5_000) : batch(['ccc'], 3_000)));
+  const now = { at: 6_000_000 };
+  try {
+    const { handlers } = events();
+    const pipeline = new Pipeline(fakeStore(), noEngine, handlers, () => now.at);
+    await pipeline.run();
+    now.at += 31_000;
+    await pipeline.run();
+
+    assert.equal(fetch.state.calls, 2);
+    assert.ok(!fetch.state.urls[0]!.includes('until='), 'the first batch is simply the newest');
+    // 5000 was the oldest of batch one, so batch two asks for older than that.
+    assert.match(fetch.state.urls[1]!, /until=4999\b/);
   } finally {
     fetch.restore();
   }
