@@ -34,7 +34,6 @@ export interface Puzzle {
   prevEval: EvalScore;
   eval: EvalScore;
   judgment?: string;
-  createdAt: number;
 }
 
 export function buildPuzzles(
@@ -42,7 +41,6 @@ export function buildPuzzles(
   steps: readonly ReplayStep[],
   candidates: readonly Candidate[],
   pov: Color,
-  now: number,
 ): Puzzle[] {
   const out: Puzzle[] = [];
   for (const c of candidates) {
@@ -66,7 +64,6 @@ export function buildPuzzles(
       prevEval: c.prevEval,
       eval: c.eval,
       ...(c.judgment ? { judgment: c.judgment } : {}),
-      createdAt: now,
     });
   }
   return out;

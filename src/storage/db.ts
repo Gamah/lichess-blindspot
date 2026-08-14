@@ -9,6 +9,8 @@
 //   solve:<id>  what has been solved, keyed by `gameId:ply`, which is stable
 //               whatever a puzzle happens to contain this week.
 //
+// Plus `meta`, the paging cursor, and `schema`, the version stamp.
+//
 // Puzzles are not stored at all: they are derived from a game whenever they are
 // wanted (see deck/derive.ts). So a game with our analysis in it is no longer
 // "re-fetchable" and is never evicted automatically — deleting it deletes the
@@ -16,13 +18,23 @@
 
 import { clear, createStore, del, delMany, entries, get, set, type UseStore } from 'idb-keyval';
 
-import type { Puzzle } from '../deck/build.ts';
 import type { ExportedGame } from '../lichess/export.ts';
 
 const GAME = 'game:';
-const PUZZLE = 'puzzle:';
 const SOLVE = 'solve:';
 const META = 'meta';
+const SCHEMA = 'schema';
+
+/**
+ * Bumped when a store written by an older version can no longer be read as it
+ * stands. There is no migration path and deliberately so — see `stale()`.
+ *
+ * 2: puzzles stopped being stored. A store from version 1 holds `puzzle:`
+ *    records nothing reads, and — worse — games our engine analysed whose
+ *    evals were thrown away, listed in `meta.analysed` so they would never be
+ *    looked at again. Neither is repairable from what is there.
+ */
+export const SCHEMA_VERSION = 2;
 
 export interface SolveRecord {
   puzzleId: string;
@@ -102,11 +114,35 @@ export class Profile {
     }, []);
 
   /**
-   * Puzzles written by the versions that persisted them, before a puzzle became
-   * a view over its game. Read so nobody loses a deck to the change; nothing
-   * writes these any more, and they can go once no profile has any left.
+   * True when this store was written by a version whose records we can no
+   * longer make sense of. An empty store is not stale — there is nothing to be
+   * wrong — and neither is one already stamped with the current version.
    */
-  legacyPuzzles = (): Promise<Puzzle[]> => this.use(store => valuesWithPrefix<Puzzle>(store, PUZZLE), []);
+  stale = (): Promise<boolean> =>
+    this.use(async store => {
+      const version = await get<number>(SCHEMA, store);
+      if (version === SCHEMA_VERSION) return false;
+      const keys = (await entries(store)).map(([k]) => k);
+      return keys.some(isPrefixed(GAME)) || keys.some(k => k === META);
+    }, false);
+
+  /**
+   * Throw away everything but the solve history and stamp the current version.
+   *
+   * Solve history is the one thing worth carrying across, and the one thing
+   * that can be: a `solve:` key is `gameId:ply`, which is what the position is,
+   * not what a record of it looked like. So the games come back from lichess,
+   * get analysed again, and everything already solved is still solved.
+   */
+  reset = (): Promise<void> =>
+    this.use(async store => {
+      const keys = (await entries(store)).map(([k]) => k).filter(k => !isPrefixed(SOLVE)(k));
+      await delMany(keys, store);
+      await set(SCHEMA, SCHEMA_VERSION, store);
+    }, undefined);
+
+  /** Stamp a store we have not had to reset, so it is never asked about again. */
+  stamp = (): Promise<void> => this.use(store => set(SCHEMA, SCHEMA_VERSION, store), undefined);
 
   solves = (): Promise<SolveRecord[]> => this.use(store => valuesWithPrefix<SolveRecord>(store, SOLVE), []);
 
@@ -166,6 +202,30 @@ export interface StorageEstimate {
   usage: number;
   quota: number;
 }
+
+/**
+ * There used to be a `purgeIfTight` here that shed the oldest game payloads
+ * once the quota got tight. It could, because a payload was a download away.
+ * A stored game now carries the analysis of it and the positions derived from
+ * that, so there is nothing left cheap enough to discard behind someone's
+ * back — and quietly spending an evening of engine time is a worse outcome
+ * than a full disk.
+ *
+ * So we say so instead, and let them choose what goes. Undefined while there
+ * is room, or the browser will not say.
+ */
+export async function storagePressure(threshold = 0.8): Promise<string | undefined> {
+  const estimate = await storageEstimate();
+  if (!estimate?.quota) return undefined;
+  if (estimate.usage / estimate.quota < threshold) return undefined;
+  return (
+    `Storage is nearly full — ${mb(estimate.usage)} of ${mb(estimate.quota)}. ` +
+    'Nothing is deleted automatically, but if the browser runs out it may drop all of it. ' +
+    'Settings can delete older games; your solve history is much smaller and stays either way.'
+  );
+}
+
+export const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 
 export async function storageEstimate(): Promise<StorageEstimate | undefined> {
   if (!navigator.storage?.estimate) return undefined;

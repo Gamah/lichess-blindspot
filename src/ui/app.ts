@@ -13,7 +13,14 @@ import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfis
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
 import { Solve } from '../solve/retro.ts';
-import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
+import {
+  mb,
+  Profile,
+  requestPersistence,
+  storageEstimate,
+  storagePressure,
+  type SolveRecord,
+} from '../storage/db.ts';
 import { recentUsernames, rememberUsername, saveSettings, settings } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
 import { Board, type PlayedMove } from './board.ts';
@@ -48,6 +55,8 @@ export class App {
   /** Set when lichess asks us to wait; no export before this. */
   private notBefore = 0;
   private notice: string | undefined;
+  /** Set when the quota is getting tight; shown until it isn't. */
+  private storageNote: string | undefined;
   /** The deck emptied and we are waiting on the pipeline to hand us more. */
   private awaitingPuzzles = false;
   private countdown: ReturnType<typeof setInterval> | undefined;
@@ -196,6 +205,7 @@ export class App {
         <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
       </header>
+      <p class="warn" id="notice" hidden></p>
       <main class="solving">
         <div class="board-wrap"><div class="board" id="board"></div></div>
         <aside class="side">
@@ -211,6 +221,7 @@ export class App {
       </main>
       <div class="panel" id="panel" hidden></div>
       ${footer()}`;
+    this.paintStorageNote();
     this.board = new Board(this.root.querySelector('#board') as HTMLElement, m => void this.onMove(m));
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
@@ -366,6 +377,12 @@ export class App {
     this.profile = profile;
     this.renderLoading();
 
+    // A store from before puzzles were derived cannot be read as it stands, and
+    // there is nothing to migrate: the evals behind its puzzles were never
+    // written down. Say so and start again.
+    if (await profile.stale()) return this.renderReset(profile);
+    void profile.stamp();
+
     await this.buildDeck();
 
     this.pipeline = new Pipeline(profile, () => this.engine(), {
@@ -389,8 +406,60 @@ export class App {
       },
     });
 
-    void this.pipeline.run().then(() => this.maybeUnlock(true));
+    void this.pipeline
+      .run()
+      .then(() => this.maybeUnlock(true))
+      .then(() => this.checkStorage());
     this.maybeUnlock();
+  }
+
+  /**
+   * The one-time reset. This version stores what it works out on the game
+   * itself rather than as puzzle records, and a store written by the previous
+   * one cannot be brought forward: the evals its puzzles were built from were
+   * never written down, so there is nothing to convert. Better to say that
+   * plainly than to half-read the old shape forever.
+   *
+   * Solve history is kept, and that is not a consolation prize: a solve is
+   * keyed by `gameId:ply`, so once the games are back and analysed again,
+   * everything already solved is still solved and stays out of the deck.
+   */
+  private renderReset(profile: Profile): void {
+    // Its "lichess is busy" ticker hunts for `form.start button`, and there is
+    // one on this screen that has nothing to do with lichess.
+    clearInterval(this.countdown);
+    this.root.innerHTML = `
+      <main class="landing reset">
+        <h1>Blindspot has changed how it stores things</h1>
+        <p>This version keeps the analysis on the game it came from, instead of keeping the
+          positions it produced. It is a better arrangement — changing what a position shows no
+          longer needs everything rebuilding — but the old store cannot be converted into the
+          new one, because the evaluations behind those positions were never saved.</p>
+        <p><strong>So the games for ${escape(profile.username)} have to be fetched and analysed
+          again.</strong> That takes a few minutes in the background, and you can solve while it
+          happens.</p>
+        <p><strong>Your solving history is kept.</strong> Positions you have already solved stay
+          solved and will not come back round.</p>
+        <form class="start">
+          <button type="submit">Start again</button>
+          <button type="button" id="elsewhere" class="quiet">Use a different name</button>
+        </form>
+      </main>
+      ${footer()}`;
+    (this.root.querySelector('form.start') as HTMLFormElement).addEventListener('submit', e => {
+      e.preventDefault();
+      void this.doReset(profile);
+    });
+    (this.root.querySelector('#elsewhere') as HTMLButtonElement).onclick = () =>
+      this.renderLanding('');
+  }
+
+  private async doReset(profile: Profile): Promise<void> {
+    await profile.reset();
+    // Straight back through the front door: `begin` finds a store it can read
+    // this time, and everything from there is an ordinary first visit.
+    this.profile = undefined;
+    await this.begin(profile.username);
   }
 
   /**
@@ -403,12 +472,8 @@ export class App {
   private async buildDeck(): Promise<void> {
     const profile = this.profile;
     if (!profile) return;
-    const [games, legacy, solves] = await Promise.all([
-      profile.games(),
-      profile.legacyPuzzles(),
-      profile.solves(),
-    ]);
-    // Switch player is one click and three IndexedDB reads are not instant.
+    const [games, solves] = await Promise.all([profile.games(), profile.solves()]);
+    // Switch player is one click and two IndexedDB reads are not instant.
     if (this.profile !== profile) return;
     const deck = new Deck();
     deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
@@ -416,9 +481,6 @@ export class App {
     // One add, not one per game: `add` reshuffles what is left each time, and
     // the shuffle is what keeps two positions from one game apart.
     deck.add(games.flatMap(game => puzzlesFromGame(game, profile.username, { maxPerGame })));
-    // Decks written before the change, whose game may since have been purged.
-    // `Deck.add` keys on `gameId:ply`, so anything derived above wins.
-    deck.add(legacy);
     this.deck = deck;
   }
 
@@ -560,6 +622,24 @@ export class App {
 
   private async refill(): Promise<void> {
     await this.pipeline?.run();
+    await this.checkStorage();
+  }
+
+  /**
+   * Nothing here is thrown away on our own initiative any more — a stored game
+   * carries the engine time spent on it — so a filling disk has to be said out
+   * loud instead. Checked after a batch, which is when it grows.
+   */
+  private async checkStorage(): Promise<void> {
+    this.storageNote = await storagePressure();
+    this.paintStorageNote();
+  }
+
+  private paintStorageNote(): void {
+    const el = this.root.querySelector('#notice') as HTMLElement | null;
+    if (!el) return;
+    el.textContent = this.storageNote ?? '';
+    el.hidden = !this.storageNote;
   }
 
   // --- the part that is allowed to know where a position came from ---------
@@ -689,8 +769,6 @@ function threadOptions(): string {
     ),
   ].join('');
 }
-
-const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 
 const showEval = (e: { cp?: number; mate?: number }): string =>
   e.mate !== undefined ? `#${e.mate}` : `${e.cp! > 0 ? '+' : ''}${(e.cp! / 100).toFixed(1)}`;

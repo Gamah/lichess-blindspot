@@ -24,7 +24,8 @@ works fine.
    chances, not if it matches one blessed solution — so quiet positional
    mistakes are solvable rather than a guessing game.
 
-Everything is stored locally in your browser. There is no server.
+Everything is stored locally in your browser — the games with their evaluations,
+and what you have solved. There is no server.
 
 ## Development
 
@@ -33,7 +34,7 @@ Requires node 22+.
 ```
 npm install
 npm run dev      # copies the engine into public/, then serves with COOP/COEP
-npm test         # the pure logic: finder, deck, solve machine, protocol
+npm test         # the pure logic: finder, deck, derive, pipeline, solve machine
 ```
 
 Two scripts run the real engine outside a browser, which is where most of this

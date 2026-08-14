@@ -16,7 +16,6 @@ const puzzle: Puzzle = {
   pv: ['Bc4'],
   prevEval: { cp: 20 },
   eval: { cp: -900 },
-  createdAt: 0,
 };
 
 test('the engine’s own move is accepted without asking the engine', () => {

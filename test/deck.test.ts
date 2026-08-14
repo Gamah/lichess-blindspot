@@ -23,7 +23,6 @@ const puzzle = (gameId: string, ply: number): Puzzle => ({
   pv: ['d4'],
   prevEval: { cp: 0 },
   eval: { cp: -200 },
-  createdAt: 0,
 });
 
 const runsOfOneGame = (deck: readonly Puzzle[]): number =>
@@ -95,7 +94,7 @@ test('a candidate becomes a puzzle holding the position before the mistake', () 
     ],
     { pov: 'white' },
   );
-  const [p] = buildPuzzles('abc123', steps, candidates, 'white', 1234);
+  const [p] = buildPuzzles('abc123', steps, candidates, 'white');
   assert.equal(p!.id, 'abc123:5');
   assert.equal(p!.ply, 5);
   assert.equal(p!.fen, steps[4]!.fen, 'the position to solve is before the mistake');

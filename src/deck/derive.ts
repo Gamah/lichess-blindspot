@@ -56,8 +56,6 @@ export function prepareGame(game: ExportedGame, username: string): Prepared | un
 export interface DeriveOptions {
   /** 0 or undefined means every candidate the finder returns. */
   maxPerGame?: number;
-  /** Stamped on the puzzles; the deck only uses it for display. */
-  now?: number;
 }
 
 /**
@@ -82,5 +80,5 @@ export function puzzlesFromGame(
   // looks the same whichever way the evals arrived.
   const max = opts.maxPerGame ?? 0;
   const chosen = max > 0 ? kept.slice(0, max) : kept;
-  return buildPuzzles(game.id, prepared.steps, chosen, prepared.pov, opts.now ?? game.createdAt ?? 0);
+  return buildPuzzles(game.id, prepared.steps, chosen, prepared.pov);
 }

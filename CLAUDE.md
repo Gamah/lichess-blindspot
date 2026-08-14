@@ -202,8 +202,8 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 
 ## Storage
 
-- IndexedDB via `idb-keyval`, one store per username, and only two kinds of
-  record: `game:<id>` and `solve:<gameId>:<ply>`.
+- IndexedDB via `idb-keyval`, one store per username. Four keys and no others:
+  `game:<id>`, `solve:<gameId>:<ply>`, `meta` (the paging cursor) and `schema`.
 - localStorage only for tiny prefs (last username, board theme). It is a
   separate, fixed ~5 MiB box, not a slice of the IndexedDB quota.
 - Call `navigator.storage.persist()` once, or the browser LRU-evicts solve
@@ -214,22 +214,40 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 load, and again whenever something that shapes the deck changes. So:
 
 - The durable artefact is the game's **`analysis` field**: lichess' evals if it
-  analysed the game, ours written into the same field if it didn't. That is
-  where the engine time lives. A stored game is therefore **not** re-fetchable
-  and nothing purges it automatically; `purgeGames` is the Settings button and
-  its copy says the positions go with it.
+  analysed the game, ours written into the same field if it didn't. The payload
+  is a download away; the analysis on it is an evening of engine time, so a
+  stored game is no longer the cheap half of the store. Nothing purges it
+  automatically — `purgeGames` is the Settings button, and its copy says the
+  positions go with it, which is now literally true.
 - Changing "positions per game" is retroactive, because the cap is applied on
   derivation. Raising it only finds more in games lichess analysed, though:
   `analyseGame`'s `maxCandidates` stops our own pass searching, so the evidence
   for the extra candidates was never gathered.
 - Puzzle identity stays `gameId:ply` whatever a puzzle contains, which is why
   `solve:` records survive any change to its shape. Keep it that way.
-- `Profile.legacyPuzzles()` reads `puzzle:` keys written by the versions that
-  persisted puzzle records. Read-only, additive to the derived deck, and
-  deletable once no profile has any left.
 - The reason this exists: every change to what a puzzle holds used to need a
   migration (`App.withIntro` backfilled the opening animation onto old
   records). Don't reintroduce a stored puzzle to save a derivation.
+
+**`purgeIfTight` is gone and nothing replaced it.** It shed the oldest game
+payloads over 80% of quota, which was safe when a payload was a download away
+and is not safe now. `storagePressure()` warns instead, on the loading and
+solving screens, and the person chooses what goes. Growth is therefore
+unbounded: roughly 2.7 KB per game we analyse and 6.6 KB per game lichess had
+analysed, so ~1 MB per 200 games — latent, not urgent, but do not add an
+automatic purge back without solving "this deletes work the engine did".
+
+**Schema resets, `SCHEMA_VERSION` in `src/storage/db.ts`.** There is no
+migration machinery and there should not be. `Profile.stale()` is true when a
+store holds records but no current stamp; `App.renderReset` says what changed
+and why it cannot be converted, and `Profile.reset()` deletes everything except
+`solve:`. Solve history is kept because `gameId:ply` survives anything — the
+games come back from lichess, get analysed again, and what was solved stays
+solved. Version 2 was the change to derived puzzles: a version-1 store held
+`puzzle:` records nothing reads plus games our engine had analysed whose evals
+were never written down and which `meta.analysed` guaranteed would never be
+looked at again. Neither is repairable, which is why this is a reset and not a
+backfill. Bump the version whenever that is true again.
 
 ## Cross-origin isolation
 

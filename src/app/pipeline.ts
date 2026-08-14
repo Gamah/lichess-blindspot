@@ -273,7 +273,7 @@ export class Pipeline {
       await this.profile.putGame(game);
     }
 
-    return puzzlesFromGame(game, this.profile.username, { maxPerGame, now: Date.now() });
+    return puzzlesFromGame(game, this.profile.username, { maxPerGame });
   }
 
   private async engineAnalysis(
