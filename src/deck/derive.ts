@@ -57,6 +57,12 @@ export function prepareGame(game: ExportedGame, username: string): Prepared | un
 export interface DeriveOptions {
   /** 0 or undefined means every candidate the finder returns. */
   maxPerGame?: number;
+  /**
+   * Re-rank anything given less time than this. Only `unrankedPlies` uses it:
+   * a quick ranking is still a ranking, so the deck keeps showing the position
+   * while the better one is being worked out.
+   */
+  minMs?: number;
 }
 
 /**
@@ -114,8 +120,9 @@ export function unrankedPlies(
 ): RankTask[] {
   const found = chosenCandidates(game, username, opts);
   if (!found) return [];
+  const minMs = opts.minMs ?? 0;
   return found.chosen
-    .filter(c => !c.alts?.length)
+    .filter(c => !c.alts?.length || (c.altsMs ?? 0) < minMs)
     .map(c => ({ index: c.index, fen: found.prepared.steps[c.index]?.fen ?? '' }))
     .filter(task => task.fen);
 }

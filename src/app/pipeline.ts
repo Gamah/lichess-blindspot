@@ -60,7 +60,10 @@ const BACKOFF = 120_000;
 const RETRY_DELAY = 8_000;
 
 /** Just the storage this needs, so tests can hand it something that isn't IndexedDB. */
-export type Store = Pick<Profile, 'username' | 'meta' | 'setMeta' | 'putGame' | 'games'>;
+export type Store = Pick<
+  Profile,
+  'username' | 'meta' | 'setMeta' | 'putGame' | 'games' | 'gameCount'
+>;
 
 export class Pipeline {
   private queue: ExportedGame[] = [];
@@ -83,6 +86,12 @@ export class Pipeline {
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
   private exhausted = false;
+  /**
+   * The storage limit is reached, so no more games are being kept. Not the
+   * same as `exhausted` — there are more games, we are choosing not to hold
+   * them — and the two need different sentences.
+   */
+  private full = false;
   /** The catch-up ranking pass is a once-per-session thing. */
   private backlogDone = false;
   /** Injectable so the governor can be tested without waiting 30 real seconds. */
@@ -119,7 +128,11 @@ export class Pipeline {
       // the deck fill at all on the first run after the ranking arrived, since
       // every stored game is withholding its positions until it has one.
       await this.rankBacklog();
-      if (!this.mayFetch()) return;
+      // Asking lichess for games we have already decided not to keep is a
+      // request against a one-per-IP limit for nothing.
+      const limit = settings().maxGames;
+      this.full = limit > 0 && (await this.profile.gameCount()) >= limit;
+      if (this.full || !this.mayFetch()) return;
       this.lastExportAt = this.now();
       await this.fetchWithRetry();
       await this.drain();
@@ -158,8 +171,9 @@ export class Pipeline {
   }
 
   /** Why the deck is not filling, for the UI to say out loud. */
-  status(): 'idle' | 'working' | 'waiting' | 'exhausted' {
+  status(): 'idle' | 'working' | 'waiting' | 'exhausted' | 'full' {
     if (this.running) return 'working';
+    if (this.full) return 'full';
     if (this.exhausted) return 'exhausted';
     return this.mayFetch() ? 'idle' : 'waiting';
   }
@@ -181,6 +195,11 @@ export class Pipeline {
    */
   recheckBacklog(): void {
     this.backlogDone = false;
+  }
+
+  /** Raising the storage limit, or purging, un-sticks a full store. */
+  recheckFull(): void {
+    this.full = false;
   }
 
   pause(): void {
@@ -235,9 +254,12 @@ export class Pipeline {
   private async rankBacklog(): Promise<void> {
     if (this.backlogDone) return;
     this.backlogDone = true;
-    const maxPerGame = settings().maxPerGame;
+    const { maxPerGame, rankMs } = settings();
     const work = (await this.profile.games())
-      .map(game => ({ game, tasks: unrankedPlies(game, this.profile.username, { maxPerGame }) }))
+      .map(game => ({
+        game,
+        tasks: unrankedPlies(game, this.profile.username, { maxPerGame, minMs: rankMs }),
+      }))
       .filter(w => w.tasks.length && w.game.analysis);
     if (!work.length) return;
 
@@ -246,6 +268,7 @@ export class Pipeline {
       for (const [i, { game, tasks }] of work.entries()) {
         await this.gate();
         await rankCandidates(await this.engine(), game.analysis!, tasks, {
+          movetime: rankMs,
           signal: this.abort.signal,
           beforeEach: () => this.gate(),
           onProgress: (done, total) => this.emit({ current: done / total }),
@@ -273,6 +296,8 @@ export class Pipeline {
   private async fetchBatch(): Promise<void> {
     const meta = await this.state();
     const seen = new Set([...meta.analysed, ...meta.fetched]);
+    const limit = settings().maxGames;
+    let held = limit ? await this.profile.gameCount() : 0;
     let oldest: number | undefined;
     let total = 0;
     const games: ExportedGame[] = [];
@@ -284,6 +309,14 @@ export class Pipeline {
       total++;
       oldest = Math.min(oldest ?? game.createdAt, game.createdAt);
       if (seen.has(game.id)) continue;
+      // The limit stops us taking more, it never deletes what is held. Break
+      // rather than skip: `fetchGames` cancels the reader in a `finally`, and
+      // leaving the export streaming is what holds lichess' one-per-IP slot.
+      if (limit && held >= limit) {
+        this.full = true;
+        break;
+      }
+      held++;
       games.push(game);
       await this.profile.putGame(game);
     }
@@ -352,10 +385,14 @@ export class Pipeline {
     // four more, so a game it analysed still owes us a ranking search per
     // candidate before any of them can be shown. Our own pass gathers them as
     // it goes, so this is usually empty for those.
-    const tasks = unrankedPlies(game, this.profile.username, { maxPerGame });
+    const tasks = unrankedPlies(game, this.profile.username, {
+      maxPerGame,
+      minMs: settings().rankMs,
+    });
     if (tasks.length && game.analysis) {
       this.emit({ engineBusy: true });
       await rankCandidates(await this.engine(), game.analysis, tasks, {
+        movetime: settings().rankMs,
         signal: this.abort.signal,
         beforeEach: () => this.gate(),
         onProgress: (done, total) => this.emit({ current: done / total }),

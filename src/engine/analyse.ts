@@ -70,11 +70,19 @@ export interface AnalyseOptions {
 export const SWEEP_DEPTH = 12;
 export const DEEP_MOVETIME = 1000;
 /**
- * The ranking search: how many alternatives, and how long they get. This is
- * the number the difficulty gate is built on and the fan of arrows a solved
- * position shows, so it is deliberately more generous than the eval searches
- * either side of it — it is gathered once, in the background, and then it is
- * what every showing of that position uses forever.
+ * The ranking search: how many alternatives, and how long they get.
+ *
+ * A time limit, and that was not the first answer. This search is *stored* and
+ * then believed on every later showing, so a depth limit is tempting: the same
+ * answer on a phone as on a desktop, rather than the phone keeping a worse one
+ * forever. Measured, that trade is not available. `scripts/rank-stability.ts`,
+ * 2026-08-14: depth 20 with MultiPV 5 costs **26 seconds a position** on a
+ * 4-thread desktop against 1.8 s for this, and agrees with a long reference
+ * search no more often — 70% on the top two against 90% here. Fourteen times
+ * the work for nothing measurable, and hours per hundred games.
+ *
+ * So: time, `altsMs` records what each position was given, and raising the
+ * setting re-ranks what was done with less.
  */
 export const RANK_LINES = 5;
 export const RANK_MOVETIME = 2000;
@@ -168,10 +176,9 @@ export async function analyseGame(
  * no `analyseLines` — the test doubles, and nothing in the browser — so a
  * position ranked that way holds one alternative rather than none.
  */
-async function rankPosition(engine: Analyser, fen: string): Promise<EngineLine[]> {
-  if (engine.analyseLines)
-    return engine.analyseLines({ fen, movetime: RANK_MOVETIME, multiPv: RANK_LINES });
-  return [await engine.analyse({ fen, movetime: RANK_MOVETIME })];
+async function rankPosition(engine: Analyser, fen: string, movetime: number): Promise<EngineLine[]> {
+  if (engine.analyseLines) return engine.analyseLines({ fen, movetime, multiPv: RANK_LINES });
+  return [await engine.analyse({ fen, movetime })];
 }
 
 const toAlts = (lines: readonly EngineLine[]): Alt[] =>
@@ -205,8 +212,9 @@ export async function rankCandidates(
   engine: Analyser,
   analysis: AnalysisEntry[],
   tasks: readonly RankTask[],
-  opts: Pick<AnalyseOptions, 'signal' | 'beforeEach' | 'onProgress'> = {},
+  opts: Pick<AnalyseOptions, 'signal' | 'beforeEach' | 'onProgress'> & { movetime?: number } = {},
 ): Promise<number> {
+  const movetime = opts.movetime ?? RANK_MOVETIME;
   let done = 0;
   for (const task of tasks) {
     await opts.beforeEach?.();
@@ -214,7 +222,8 @@ export async function rankCandidates(
     const entry = analysis[task.index];
     if (!entry) continue;
     try {
-      entry.alts = toAlts(await rankPosition(engine, task.fen));
+      entry.alts = toAlts(await rankPosition(engine, task.fen, movetime));
+      entry.altsMs = movetime;
       done++;
     } catch (e) {
       if (e instanceof Aborted) throw e;

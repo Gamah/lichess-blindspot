@@ -8,6 +8,18 @@ import type { Analyser } from '../src/engine/analyse.ts';
 import type { EngineLine, Request } from '../src/engine/protocol.ts';
 import type { ExportedGame } from '../src/lichess/export.ts';
 import type { Meta } from '../src/storage/db.ts';
+import { saveSettings } from '../src/storage/prefs.ts';
+
+// Settings live in localStorage, which node does not have — and `prefs` is
+// written to fail soft rather than throw when a browser refuses storage, so
+// without this every setting silently reads as its default and a test that
+// changes one tests nothing.
+const store = new Map<string, string>();
+(globalThis as { localStorage?: unknown }).localStorage = {
+  getItem: (k: string) => store.get(k) ?? null,
+  setItem: (k: string, v: string) => void store.set(k, v),
+  removeItem: (k: string) => void store.delete(k),
+};
 
 // lichess allows one games export per IP at a time, so the thing under test is
 // how often this asks — not what it does with the answers.
@@ -26,6 +38,7 @@ const fakeStore = (): Store & { stored: ExportedGame[] } => {
       stored.push(game);
     },
     games: async () => stored.slice(),
+    gameCount: async () => stored.length,
   };
 };
 
@@ -318,4 +331,37 @@ test('a game already ranked is not ranked again', async () => {
     fetch.restore();
   }
   assert.deepEqual(errors, [], 'a store with nothing owing gives the engine no reason to start');
+});
+
+// The limit exists for phones, where an unbounded database is both slowest to
+// build and likeliest to be thrown away by the browser.
+test('the storage limit stops new games arriving and deletes nothing', async () => {
+  const store = fakeStore();
+  for (const id of ['old1', 'old2']) {
+    store.stored.push({
+      id,
+      createdAt: 1000,
+      variant: 'standard',
+      players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+      moves: 'e4 e5',
+    } as ExportedGame);
+  }
+  saveSettings({ maxGames: 2 });
+  const { handlers, errors } = events();
+  let asked = 0;
+  const fetch = stubFetch(() => {
+    asked++;
+    return new Response('');
+  });
+  try {
+    const engine: Analyser = { analyse: () => Promise.reject(new Error('no engine needed')) };
+    await new Pipeline(store, () => Promise.resolve(engine), handlers, () => 0).run();
+  } finally {
+    fetch.restore();
+    saveSettings({ maxGames: 0 });
+  }
+
+  assert.equal(asked, 0, 'lichess is not asked for games we have decided not to keep');
+  assert.equal(store.stored.length, 2, 'and nothing already held is dropped to make room');
+  assert.deepEqual(errors, []);
 });

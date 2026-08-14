@@ -39,6 +39,7 @@ export const forgetUsername = (username: string): void =>
     recentUsernames().filter(u => u.toLowerCase() !== username.toLowerCase()),
   );
 
+import { RANK_MOVETIME } from '../engine/analyse.ts';
 import { isDifficulty, type Difficulty } from '../solve/retro.ts';
 
 export interface Settings {
@@ -62,9 +63,56 @@ export interface Settings {
    * device and an unusable one.
    */
   threads: number;
+  /**
+   * Stop keeping games once this many are stored; 0 for no limit.
+   *
+   * A **limit, not a budget**: reaching it stops new games being fetched, it
+   * does not start deleting old ones. That asymmetry is the whole point — a
+   * stored game carries the analysis and the ranking done on it, which is
+   * minutes of engine time and cannot be re-fetched, so nothing here throws
+   * one away on its own initiative. Purge in Settings is the manual answer,
+   * and it says what it takes with it.
+   *
+   * Counted in games rather than megabytes because it can be enforced exactly
+   * and works in a browser that will not report a quota at all; Settings shows
+   * the live figure in MB next to it so the two can be related.
+   */
+  maxGames: number;
+  /**
+   * How long the engine gets on **one position it is preparing** — the ranking
+   * search, and nothing else. Milliseconds, like lichess mobile's engine
+   * setting.
+   *
+   * Explicitly *not* the sweep that hunts for blunders: that is a fixed shallow
+   * pass over every ply of every game and is the wrong thing to spend on. Nor
+   * the pair of searches that confirm a swing, which decide *whether* a
+   * position is a puzzle at all — a slider there would silently change which
+   * mistakes the deck contains rather than how well they are understood.
+   *
+   * `altsMs` records what each position was actually given, so raising this
+   * re-ranks the positions done under the old value and lowering it leaves
+   * better work alone.
+   */
+  rankMs: number;
 }
 
-export const DEFAULT_SETTINGS: Settings = { maxPerGame: 3, threads: 0 };
+/** Roughly what one stored game costs, for turning a count into a size. */
+export const BYTES_PER_GAME = 5_000;
+
+/**
+ * A phone's quota is smaller and its eviction is more eager, and it is also
+ * the device where an unbounded history hurts most. So a first visit on one
+ * starts bounded and can be raised, rather than starting unbounded and being
+ * discovered.
+ */
+export const MOBILE_GAME_LIMIT = 150;
+
+export const DEFAULT_SETTINGS: Settings = {
+  maxPerGame: 3,
+  threads: 0,
+  maxGames: 0,
+  rankMs: RANK_MOVETIME,
+};
 
 export const settings = (): Settings => ({
   ...DEFAULT_SETTINGS,

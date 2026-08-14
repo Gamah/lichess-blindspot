@@ -46,6 +46,13 @@ export interface AnalysisEntry {
    * see `puzzlesFromGame`.
    */
   alts?: Alt[];
+  /**
+   * How many milliseconds `alts` was given. Kept because the ranking is a
+   * *setting*: raising it has to be able to find the positions ranked under
+   * the old one and do them again, and lowering it must not throw better work
+   * away.
+   */
+  altsMs?: number;
 }
 
 export interface Candidate {
@@ -70,6 +77,7 @@ export interface Candidate {
    * for.
    */
   alts?: Alt[];
+  altsMs?: number;
 }
 
 const score = (a: AnalysisEntry | undefined): EvalScore | undefined => {
@@ -127,6 +135,7 @@ export function findCandidates(
       eval: curr,
       judgment: entry.judgment?.name,
       ...(entry.alts ? { alts: entry.alts } : {}),
+      ...(entry.altsMs !== undefined ? { altsMs: entry.altsMs } : {}),
     });
   }
   return out;

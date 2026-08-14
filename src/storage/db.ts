@@ -135,6 +135,10 @@ export class Profile {
   hasGames = (): Promise<boolean> =>
     this.use(async store => (await entries(store)).some(([k]) => isPrefixed(GAME)(k)), false);
 
+  /** How many games are held, for the storage limit to be measured against. */
+  gameCount = (): Promise<number> =>
+    this.use(async store => (await entries(store)).filter(([k]) => isPrefixed(GAME)(k)).length, 0);
+
   /**
    * Everything for this username, gone, and the current version stamped on the
    * empty store.

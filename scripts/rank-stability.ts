@@ -28,8 +28,23 @@ const UA = { 'User-Agent': 'blindspot-verify (github.com/Gamah/lichess-blindspot
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const NNUE_CACHE = join(homedir(), '.local', 'share', 'toolchains', 'nnue');
 
-/** The budgets to compare, and the reference they are compared against. */
-const BUDGETS = [500, 1000, 2000, 4000];
+/**
+ * The budgets to compare, and the reference they are compared against.
+ *
+ * Depth as well as time, because the ranking is *stored* and then believed on
+ * every later showing: with a movetime limit the answer depends on the device
+ * that happened to compute it, so a phone would keep a worse top 5 than a
+ * desktop forever and Hard would mean something different on each. A depth
+ * limit is the same answer everywhere, bought at whatever speed the device
+ * manages. What has to be checked is the price.
+ */
+const BUDGETS: { label: string; req: { movetime?: number; depth?: number } }[] = [
+  { label: '1000ms', req: { movetime: 1000 } },
+  { label: '2000ms', req: { movetime: 2000 } },
+  { label: 'depth 16', req: { depth: 16 } },
+  { label: 'depth 18', req: { depth: 18 } },
+  { label: 'depth 20', req: { depth: 20 } },
+];
 const REFERENCE = 12_000;
 
 async function loadGame(arg: string | undefined): Promise<ExportedGame> {
@@ -86,36 +101,40 @@ const sampled = steps
 console.log(`${sampled.length} positions from ${game.id} (${candidates.size} candidates)\n`);
 
 const session = await bootEngine();
-const rank = async (fen: string, movetime: number): Promise<string[]> =>
-  (await session.analyseLines({ fen, movetime, multiPv: RANK_LINES }))
-    .map(l => l.pv[0] ?? '')
-    .filter(Boolean);
+const rank = async (fen: string, req: { movetime?: number; depth?: number }) => {
+  const started = Date.now();
+  const lines = await session.analyseLines({ fen, ...req, multiPv: RANK_LINES });
+  return { moves: lines.map(l => l.pv[0] ?? '').filter(Boolean), ms: Date.now() - started };
+};
 
-const tally = new Map(BUDGETS.map(b => [b, { best: 0, top2: 0, overlap: 0, exact: 0, n: 0 }]));
+const tally = new Map(
+  BUDGETS.map(b => [b.label, { best: 0, top2: 0, overlap: 0, exact: 0, ms: 0, n: 0 }]),
+);
 
 for (const { step, i } of sampled) {
-  const reference = await rank(step.fen, REFERENCE);
+  const reference = (await rank(step.fen, { movetime: REFERENCE })).moves;
   const row: string[] = [];
   for (const budget of BUDGETS) {
-    const got = await rank(step.fen, budget);
-    const t = tally.get(budget)!;
+    const { moves: got, ms } = await rank(step.fen, budget.req);
+    const t = tally.get(budget.label)!;
     t.n++;
+    t.ms += ms;
     if (got[0] === reference[0]) t.best++;
     if (sameSet(got.slice(0, 2), reference.slice(0, 2))) t.top2++;
     t.overlap += got.filter(u => reference.includes(u)).length / Math.max(1, reference.length);
     if (got.join() === reference.join()) t.exact++;
-    row.push(`${budget}ms ${got[0] === reference[0] ? '=' : '≠'}`);
+    row.push(`${budget.label} ${got[0] === reference[0] ? '=' : '≠'}`);
   }
   console.log(`ply ${String(i + 1).padStart(3)}  ${row.join('  ')}  ref: ${reference.join(' ')}`);
 }
 
 console.log('\nagainst a %ss reference, over %d positions:', REFERENCE / 1000, sampled.length);
-console.log('budget   best move   same top 2   top-5 overlap   identical order');
-for (const [budget, t] of tally) {
+console.log('budget      best move  same top 2  top-5 overlap  identical order  avg time');
+for (const [label, t] of tally) {
   console.log(
-    `${String(budget).padStart(5)}ms   ${pct(t.best / t.n)}        ${pct(t.top2 / t.n)}         ${pct(
+    `${label.padEnd(10)}  ${pct(t.best / t.n)}       ${pct(t.top2 / t.n)}        ${pct(
       t.overlap / t.n,
-    )}           ${pct(t.exact / t.n)}`,
+    )}          ${pct(t.exact / t.n)}          ${Math.round(t.ms / t.n)}ms`,
   );
 }
 

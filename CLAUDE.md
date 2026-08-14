@@ -254,38 +254,104 @@ reports how often the best move, the top 2, and the whole order survive.
 **Measured 2026-08-14**, 10 midgame positions from one game (`NIvSfA68`), 4
 threads, against a 12-second reference:
 
-| budget | best move | same top 2 | top-5 overlap | identical order |
-| --- | --- | --- | --- | --- |
-| 500 ms | 90% | 70% | 92% | 40% |
-| 1000 ms | 100% | 60% | 88% | 20% |
-| 2000 ms | 90% | 70% | 92% | 30% |
-| 4000 ms | 100% | 70% | 92% | 40% |
+| budget | best move | same top 2 | top-5 overlap | identical order | avg time |
+| --- | --- | --- | --- | --- | --- |
+| 1000 ms | 100% | 70% | 96% | 10% | 0.9 s |
+| 2000 ms | 100% | 90% | 94% | 40% | 1.8 s |
+| depth 16 | 100% | 70% | 96% | 10% | 3.5 s |
+| depth 18 | 100% | 70% | 94% | 30% | 11.9 s |
+| depth 20 | 100% | 70% | 94% | 20% | 25.9 s |
 
-Small sample, so read the shape and not the digits — but the shape is the
-point: **more time does not buy stability.** 4 s is no better than 0.5 s, the
-reference search itself is not deterministic between runs (a re-run reordered
-one position's top two), and the best move is nearly always right while the
-exact order almost never survives. So do not reach for a bigger
-`RANK_MOVETIME` expecting the ranking to settle down; the variance is the
-positions and the thread nondeterminism, not the budget. 2 s is chosen as
-comfortably past the point where more stops helping.
+Small sample, so read the shape and not the digits. Two things decided the
+design:
+
+**Spending more does not buy a better ranking.** The best move is already
+settled at 1 s, and the exact order is not settled anywhere — a re-run moved
+the *reference's* own top two. Do not reach for a bigger number expecting the
+ranking to firm up; the variance is the positions and the thread
+nondeterminism, not the budget.
+
+**Depth was tried and rejected.** It is the theoretically better limit for
+something stored and then trusted forever — the same setting means the same
+ranking on a phone as on a desktop, instead of the phone keeping a worse one —
+and it costs fourteen times as much for no measured gain. Depth 20 is 26
+seconds a position, i.e. hours per hundred games and most of a day on a phone.
+So the limit is time, `altsMs` records what each position was given, and the
+device-dependence is accepted and written down here rather than paid for.
+(Note the confound before re-deriving this: the reference is itself a movetime
+search, which flatters movetime budgets. It does not flatter them by 14×.)
 
 The consequence for Hard is real and worth stating: its top-2 boundary
-disagrees with a deep search perhaps a third of the time, so it will sometimes
-refuse a move a stronger engine ranks second. That is why the copy in Settings,
-on the notice, and under the board says this is a seconds-long search and not a
-deep one — keep it honest.
+disagrees with a longer search perhaps a tenth to a third of the time, so it
+will sometimes refuse a move a stronger engine ranks second. That is why the
+copy in Settings, on the notice, and under the board says this is a
+seconds-long search and not an exhaustive one — keep it honest.
+
+## The settings, and what each one is allowed to touch
+
+Four dials, and the boundaries between them are the design:
+
+- **Difficulty** — the verdict only. Reads the stored ranking; changes nothing
+  about what is stored or fetched, so it takes effect on the next move tried.
+- **Thinking time per position** (`rankMs`) — the *ranking* search only, one
+  position at a time. **Not the sweep**, which is a fixed shallow pass over
+  every ply and is the wrong place to spend; and **not** pass 2's confirming
+  pair, because those decide *whether* a position is a puzzle at all and a
+  dial there would silently change which mistakes the deck contains rather than
+  how well they are understood. Raising it re-queues everything ranked in less
+  (`unrankedPlies` compares `altsMs`); lowering it leaves better work alone,
+  because a longer ranking is not worse.
+- **Positions per game** (`maxPerGame`) — how many candidates a game may
+  contribute. Retroactive on the deck; raising it queues ranking work.
+- **Games to keep** (`maxGames`) — a **limit, not a budget**. Reaching it stops
+  new games being fetched; it never deletes what is held, because a stored game
+  carries minutes of engine time that cannot be fetched back. `Pipeline.full`
+  is that state and it gets its own sentence on the exhausted screen, separate
+  from "lichess has no more games". Purge in Settings is the manual answer, and
+  `recheckFull()` un-sticks the pipeline after either that or a raise. Counted
+  in games rather than megabytes so it can be enforced exactly and still works
+  in a browser that will not report a quota; a first visit **on a phone** is
+  stamped with `MOBILE_GAME_LIMIT` rather than unlimited, since that is where
+  an unbounded database is both slowest to build and likeliest to be evicted
+  wholesale.
 
 ## This uses the processor, and that is the point
 
-Blindspot is a chess engine running in a tab. Ranking every position before
-showing it is CPU work by design, and the app says so rather than hiding it:
-the loading screen names the phase, and the landing page says the fan is
-supposed to spin. **Do not "fix" this by making the engine do less.** If
-something here needs to get cheaper, make it *fewer positions* (the
-`maxPerGame` cap) or *better scheduled* (the pipeline yields to the solve loop
-between searches), never a shallower ranking — a ranking nobody can trust is
-worse than no setting at all.
+Blindspot is a chess engine running in a tab. Every position is searched
+before anyone is shown it, and that is CPU work by design.
+
+What it costs, per candidate position, all of it background and none of it
+while someone is looking at a board:
+
+| | |
+| --- | --- |
+| sweep (pass 1) | ~0.1 s **per ply of the game**, depth 12, single line |
+| confirm the swing (pass 2) | ~1 s + ~1 s, single line, both sides of the move |
+| rank it (`rankCandidates`) | one search of `rankMs` (default 2 s), MultiPV 5 |
+
+At the default three positions a game that is roughly a dozen seconds of engine
+time per game, plus the sweep. A first run over a long history is therefore
+tens of minutes of sustained load, and **that is fine** — it is what the app
+is. Solving costs nothing on Medium and Hard, where the verdict comes off the
+stored ranking; Easy still pays one ~1 s search for a move the engine did not
+rank.
+
+**Do not "fix" this by making the engine do less.** If something has to get
+cheaper, make it *fewer positions* (the `maxPerGame` cap) or *better scheduled*
+(the pipeline yields to the solve loop between searches), never a shorter
+ranking search than the measurements support — a ranking nobody can trust is
+worse than no setting at all. The person may spend less if they choose to;
+that is what the setting is for, and it is their battery.
+
+Say it, rather than hiding it. The loading screen names the phase and the count
+remaining, the landing page says the work is supposed to be happening, and
+`batteryWarning()` tells a phone plainly that this will run it hard and is
+worth plugging in for. That warning is best-effort by construction:
+`navigator.userAgentData.mobile` where it exists (Chromium only) and a
+user-agent sniff behind it, both inside a `try`, because nothing on the boot
+path may throw — and it errs towards warning, since a laptop shown it has
+merely read something irrelevant while a phone denied it gets a hot device and
+no explanation.
 
 **Running with no engine is not a supported mode.** It used to be a degraded
 one: games lichess had already analysed produced positions for free. That is
@@ -380,7 +446,9 @@ analysed, so ~1 MB per 200 games — latent, not urgent, but do not add an
 automatic purge back without solving "this deletes work the engine did".
 `alts` adds roughly 150 bytes per position kept, which is noise against those
 figures and is the cheapest part of the store to hold and the dearest to
-recreate: two seconds of engine time each, and a purge throws it away.
+recreate: seconds of engine time each, and a purge throws it away. Growth is no
+longer strictly unbounded either — `maxGames` stops it — but the stopping is
+"fetch no more", never "delete the oldest", for that same reason.
 
 **Schema resets, `SCHEMA_VERSION` in `src/storage/db.ts`.** There is no
 migration machinery and there should not be. `Profile.stale()` is true when a

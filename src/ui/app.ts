@@ -10,7 +10,7 @@ import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
 import { puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
-import { RANK_MOVETIME, type Analyser } from '../engine/analyse.ts';
+import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
 import { DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
 import {
@@ -22,8 +22,10 @@ import {
   type SolveRecord,
 } from '../storage/db.ts';
 import {
+  BYTES_PER_GAME,
   difficulty,
   difficultyChosen,
+  MOBILE_GAME_LIMIT,
   forgetPrefs,
   recentUsernames,
   rememberUsername,
@@ -118,6 +120,7 @@ export class App {
 
         ${error ? `<p class="error">${escape(error)}</p>` : ''}
         ${engineNag(this.isolation, this.engineFailed)}
+        ${batteryWarning()}
 
         <ol class="steps">
           <li>
@@ -200,6 +203,7 @@ export class App {
         )}</p>
         ${this.notice ? `<p class="warn">${escape(this.notice)}</p>` : ''}
         ${engineNag(this.isolation, this.engineFailed)}
+        ${batteryWarning()}
         <div class="bar"><div class="fill" style="width:${Math.round(bar * 100)}%"></div></div>
         <p class="detail">${done} game${done === 1 ? '' : 's'} analysed · ${found} position${
           found === 1 ? '' : 's'
@@ -307,6 +311,33 @@ export class App {
       </div>
 
       <div class="setting">
+        <label for="rank-ms">Thinking time per position</label>
+        <select id="rank-ms">${rankTimeOptions()}</select>
+        <p class="hint">How long the engine gets on <em>one position it is preparing</em>, which is
+          where the five best moves — and so the whole difficulty setting — come from. It does not
+          touch the quick pass that hunts for your mistakes in the first place, and it does not
+          change <em>which</em> positions become puzzles, only how well they are understood.
+          <br>
+          Spending more is not worth as much as it sounds: measured against a twelve-second
+          search, two seconds already names the same best move every time, and the tail of the
+          list stays uncertain however long it is given. Worth lowering on a phone, where this is
+          the bulk of the work and the battery. Raising it re-ranks positions done at the old
+          setting, in the background; lowering it leaves the better work alone.</p>
+      </div>
+
+      <div class="setting">
+        <label for="max-games">Games to keep</label>
+        <select id="max-games">${gameLimitOptions()}</select>
+        <p class="hint">Stops fetching once this many games are stored${
+          estimate ? ` — you are using ${mb(estimate.usage)} of ${mb(estimate.quota)}` : ''
+        }, at roughly ${(BYTES_PER_GAME / 1000).toFixed(0)} KB a game. It is a limit, not a
+          budget: reaching it stops new games arriving, it never deletes what is held, because a
+          stored game carries minutes of engine time that cannot be fetched back. Purge below is
+          the manual way to make room. Worth setting on a phone, where the browser is quicker to
+          throw a large database away.</p>
+      </div>
+
+      <div class="setting">
         <label for="threads">Processor cores</label>
         <select id="threads">${threadOptions()}</select>
         <p class="hint">How many cores the engine may use while it analyses. More is faster;
@@ -375,6 +406,33 @@ export class App {
       );
       void this.refill();
     };
+    (panel.querySelector('#rank-ms') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      const previous = settings().rankMs;
+      saveSettings({ rankMs: value });
+      // Raising it makes every shallower ranking into work again; lowering it
+      // is simply believed from here on, because a deeper ranking is not worse.
+      if (value > previous) this.pipeline?.recheckBacklog();
+      status(
+        value > previous
+          ? `${seconds(value)} a position. The ones done in less are being redone in the background.`
+          : `${seconds(value)} a position. Positions already given longer keep their ranking.`,
+      );
+      if (value > previous) void this.refill();
+    };
+    (panel.querySelector('#max-games') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      saveSettings({ maxGames: value });
+      // Raising it means the pipeline can go back to lichess; lowering it does
+      // nothing to what is already here, on purpose.
+      this.pipeline?.recheckFull();
+      status(
+        value === 0
+          ? 'Keeping games until the browser runs out of room.'
+          : `Keeping at most ${value} games — about ${mb(value * BYTES_PER_GAME)}. Nothing already stored is deleted.`,
+      );
+      if (value === 0 || value > 0) void this.refill();
+    };
     (panel.querySelector('#threads') as HTMLSelectElement).onchange = e => {
       const value = Number((e.target as HTMLSelectElement).value);
       saveSettings({ threads: value });
@@ -385,6 +443,7 @@ export class App {
     };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
       const dropped = await this.profile?.purgeGames();
+      this.pipeline?.recheckFull();
       await this.buildDeck();
       this.renderCounters();
       status(
@@ -429,7 +488,11 @@ export class App {
     // the default instead and never asked.
     if (!difficultyChosen()) {
       if (await profile.hasGames()) return this.renderDifficultyNotice(profile);
-      saveSettings({ difficulty: 'easy' });
+      // A first visit, so the defaults are simply recorded. On a phone that
+      // includes a storage limit: an unbounded history is worst exactly where
+      // the browser is keenest to throw the whole database away, and starting
+      // bounded and raising it beats discovering it.
+      saveSettings({ difficulty: 'easy', ...(onMobile() ? { maxGames: MOBILE_GAME_LIMIT } : {}) });
     }
 
     await this.buildDeck();
@@ -520,18 +583,20 @@ export class App {
           this one of the moves I would name". <strong>Medium</strong> wants your move inside the
           engine's top 5 from that position, <strong>Hard</strong> inside its top 2. The engine's
           own move and a move that mates are accepted whatever you pick.</p>
-        <p class="warn">Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(0)}-second
-          search in this browser, worked out before a position is ever put in front of you. That
-          is enough to settle the best move or two and not much more: a deeper search, or lichess'
-          own analysis, will sometimes put a different move third. Hard is strict about something
-          the engine is sure of; Medium's top 5 is wide enough that the disagreement rarely
-          reaches its edge. Neither is a verdict on your move from on high.</p>
-        <p><strong>Whichever you pick, there is some catching up to do first.</strong> Every game
-          already stored has to have its positions ranked, including the ones lichess analysed for
-          you — the export gives one best move per position and no way to ask for four more. It is
-          one search per position you would be shown, not a re-analysis, and it runs in the
-          background: expect a few minutes of a busy processor, and the deck opens as soon as the
-          first few are done. Nothing is downloaded again and nothing stored is lost.</p>
+        <p class="warn">Those rankings are worked out in this browser before a position is ever
+          put in front of you, and to a fixed depth rather than for a fixed time — so the answer
+          does not depend on what you are using, only how long it takes to get there. It settles
+          the best move or two and not much more: a deeper search, or lichess' own analysis, will
+          sometimes put a different move third. Hard is strict about something the engine is sure
+          of; Medium's top 5 is wide enough that the disagreement rarely reaches its edge. Neither
+          is a verdict on your move from on high.</p>
+        <p><strong>Whichever you pick, every position already stored has to be ranked first.</strong>
+          That includes the games lichess analysed for you — its export gives one best move per
+          position and no way to ask for four more. It is one search per position you would be
+          shown rather than a re-analysis, and it runs in the background with the deck opening as
+          soon as the first few are done. On a long history it will keep the processor busy for a
+          while. Nothing is downloaded again and nothing stored is lost.</p>
+        ${batteryWarning()}
         <p>A solved position now also shows those five as numbered arrows, with the one you found
           in green and the move the game played in red. The setting can be changed at any time in
           Settings.</p>
@@ -792,10 +857,9 @@ export class App {
         puzzle.alts.length > 1
           ? `<p class="line dim">The numbered arrows are the engine's top ${puzzle.alts.length}
              from this position, best first, worked out before you were shown it — so the same
-             move gets the same verdict every time it comes round. It is a
-             ${(RANK_MOVETIME / 1000).toFixed(0)}-second search, not a deep one: the first move or
-             two are settled, the tail is not, and a longer search will sometimes reorder it. Red
-             is what the game played.</p>`
+             move gets the same verdict every time it comes round, on any device. It is a real
+             search but not an exhaustive one: the first move or two are settled, the tail is not,
+             and a longer search will sometimes reorder it. Red is what the game played.</p>`
           : ''
       }`);
   }
@@ -817,7 +881,10 @@ export class App {
     const pipeline = this.pipeline;
     const status = pipeline?.status() ?? 'idle';
     const message =
-      status === 'exhausted'
+      status === 'full'
+        ? `<span>The storage limit is reached, so no more games are being fetched — nothing
+             stored has been deleted. Settings can raise the limit or purge older games.</span>`
+        : status === 'exhausted'
         ? '<span>That is every game lichess has for you. Come back after a few more.</span>'
         : status === 'working'
           ? '<span>Analysing older games — the next position will appear here by itself.</span>'
@@ -921,11 +988,42 @@ const DIFFICULTY_HINT = `What counts as finding it. <strong>Easy</strong> accept
   engine actually plays and a move that mates always count, whatever the setting.
   <br>
   Every position is ranked before it is shown to you, so this takes effect immediately and the
-  same move always gets the same answer. That ranking is a
-  ${(RANK_MOVETIME / 1000).toFixed(0)}-second search on this device, not a deep one: past the
-  first move or two the order is genuinely uncertain, and a longer search — or lichess' own
-  analysis — will sometimes disagree about what the third-best move is. Hard is the honest
-  setting for that reason; Medium's top 5 is wide enough that the wobble rarely reaches it.`;
+  same move always gets the same answer. That ranking searches to a fixed depth — the same result
+  on any device, just slower on a modest one — but it is not exhaustive: past the first move or
+  two the order is genuinely uncertain, and a longer search, or lichess' own analysis, will
+  sometimes disagree about what the third-best move is. Hard is the honest setting for that
+  reason; Medium's top 5 is wide enough that the wobble rarely reaches it.`;
+
+const seconds = (ms: number): string => `${(ms / 1000).toFixed(ms % 1000 ? 1 : 0)} seconds`;
+
+function rankTimeOptions(): string {
+  const chosen = settings().rankMs;
+  const labels: Record<number, string> = {
+    500: 'quickest — hard on nothing',
+    1000: 'quick',
+    2000: 'normal',
+    4000: 'thorough',
+    8000: 'as much as it can use',
+  };
+  return [500, 1000, 2000, 4000, 8000]
+    .map(
+      ms =>
+        `<option value="${ms}"${ms === chosen ? ' selected' : ''}>${seconds(ms)} — ${labels[ms]}</option>`,
+    )
+    .join('');
+}
+
+function gameLimitOptions(): string {
+  const chosen = settings().maxGames;
+  return [50, 100, 150, 300, 500, 0]
+    .map(
+      n =>
+        `<option value="${n}"${n === chosen ? ' selected' : ''}>${
+          n === 0 ? 'no limit' : `${n} games (~${mb(n * BYTES_PER_GAME)})`
+        }</option>`,
+    )
+    .join('');
+}
 
 function difficultyOptions(): string {
   const chosen = difficulty();
@@ -981,6 +1079,44 @@ function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
 }
 
 const REPO = 'https://github.com/Gamah/lichess-blindspot';
+
+/**
+ * Best effort, and it has to *be* best effort: there is no reliable way to ask
+ * a browser "are you a phone". `navigator.userAgentData.mobile` is the one
+ * honest answer and only Chromium has it, so the string sniff is the fallback
+ * and both are wrapped — a wrong guess here must never be able to throw on the
+ * boot path.
+ *
+ * Being wrong is cheap in one direction only: a laptop shown the battery
+ * warning has been told something irrelevant, while a phone not shown it gets
+ * a hot device and a flat battery with no explanation. So it errs towards
+ * warning.
+ */
+function onMobile(): boolean {
+  try {
+    const hinted = (navigator as { userAgentData?: { mobile?: boolean } }).userAgentData;
+    if (typeof hinted?.mobile === 'boolean') return hinted.mobile;
+    return /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(navigator.userAgent);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Said out loud rather than engineered around. Blindspot runs a chess engine
+ * on every position before it shows it, and on a phone that is a real cost in
+ * heat and battery — which is a thing to tell someone, not a reason to give
+ * them a worse ranking. The dial that actually helps is fewer positions per
+ * game, so it points at that.
+ */
+function batteryWarning(): string {
+  if (!onMobile()) return '';
+  return `<p class="warn"><strong>This will work your phone hard.</strong> Stockfish runs in this
+    tab and searches every position before you are shown it, so a long history means sustained
+    processor use — a warm device and a noticeable dent in the battery. It is meant to do that,
+    and it is worth plugging in for. Settings can lower "positions per game" and the number of
+    processor cores, which is the honest way to spend less.</p>`;
+}
 
 /**
  * **Running without an engine is not a supported mode.** It used to be a

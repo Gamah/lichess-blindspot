@@ -119,3 +119,21 @@ test('the ranking backlog respects the cap, so it never ranks what is not shown'
     [4],
   );
 });
+
+test('a quicker ranking still shows its puzzle, and still asks to be redone', () => {
+  const shallow = ANALYSIS.map(e =>
+    e.alts ? { ...e, alts: e.alts, altsMs: 1000 } : e,
+  );
+  const g = game({ analysis: shallow });
+  // Shown: a ranking made at the old setting is a ranking, and withholding the
+  // position while a better one is worked out would empty the deck for nothing.
+  assert.equal(puzzlesFromGame(g, 'someone').length, 2);
+  // But queued, because the setting now asks for more than it got.
+  assert.deepEqual(
+    unrankedPlies(g, 'someone', { minMs: 2000 }).map(t => t.index),
+    [4, 6],
+  );
+  // And left alone when the setting asks for no more than it already had.
+  assert.deepEqual(unrankedPlies(g, 'someone', { minMs: 1000 }), []);
+  assert.deepEqual(unrankedPlies(g, 'someone', { minMs: 500 }), [], 'never redone downwards');
+});
