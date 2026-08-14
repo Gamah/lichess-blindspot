@@ -25,14 +25,15 @@ const puzzle: Puzzle = {
   prevEval: { cp: 20 },
   eval: { cp: -900 },
   // The engine's five, best first, gathered before the position was shown.
-  // Bc4 is `best`, Nc3 is its third choice and roughly holds, a2a3 is its
-  // fifth and does not.
+  // Bc4 is `best`; a2a3 is its fifth and is the awkward case the eval test
+  // exists for — a line the engine named that is *worse* than the blunder the
+  // puzzle is about, so being on the list must not be enough to pass.
   alts: [
     { uci: 'f1c4', eval: 30 },
     { uci: 'd2d4', eval: 25 },
     { uci: 'b1c3', eval: 10 },
     { uci: 'e1g1', eval: 5 },
-    { uci: 'a2a3', eval: -400 },
+    { uci: 'a2a3', eval: -1200 },
   ],
 };
 
@@ -56,21 +57,30 @@ test('anything else has to be judged by the engine', () => {
   assert.equal(classify(puzzle, { uci: 'd2d4', san: 'd4' }), 'eval');
 });
 
-test('judging is “did that throw anything away”, not “was that best”', () => {
-  // Level with the position we were handed: fine, even though it isn't Bc4.
+test('judging is “did you improve on what you played”, not “was that best”', () => {
+  // The puzzle is Ng5 (-900) played where Bc4 (+20) held. The question is
+  // whether the move beats Ng5, *not* whether it matches Bc4 — that difference
+  // is the whole reason this is not a straight port of retroCtrl.
+  //
+  // Nowhere near best, but it saves the piece: a win. Under the old baseline
+  // this was a fail, which is the bug.
+  assert.equal(judgeEval(puzzle, { cp: -150 }), 'win');
+  // Level with the position we were handed: obviously fine.
   assert.equal(judgeEval(puzzle, { cp: 20 }), 'win');
-  // A little worse, inside the -0.04 winning-chances tolerance: still fine.
-  assert.equal(judgeEval(puzzle, { cp: 0 }), 'win');
-  // Dropping a piece is not.
+  // No better than the blunder is not an improvement.
   assert.equal(judgeEval(puzzle, { cp: -900 }), 'fail');
+  assert.equal(judgeEval(puzzle, { cp: -1500 }), 'fail');
   assert.equal(judgeEval(puzzle, { mate: -3 }), 'fail');
 });
 
 test('black’s puzzles are judged from black’s side', () => {
-  const black: Puzzle = { ...puzzle, pov: 'black', prevEval: { cp: -20 } };
-  // White-POV -900 is winning for black, so this is an improvement, not a loss.
+  // Mirrored: black played something reaching +900 where the position was -20.
+  const black: Puzzle = { ...puzzle, pov: 'black', prevEval: { cp: -20 }, eval: { cp: 900 } };
+  // White-POV -900 is winning for black, so this is an improvement.
   assert.equal(judgeEval(black, { cp: -900 }), 'win');
+  assert.equal(judgeEval(black, { cp: 150 }), 'win');
   assert.equal(judgeEval(black, { cp: 900 }), 'fail');
+  assert.equal(judgeEval(black, { cp: 1500 }), 'fail');
 });
 
 test('a wrong move is a retry, and a right one ends the solve', () => {
@@ -123,7 +133,8 @@ test('the whole verdict comes off the puzzle, with no engine anywhere near it', 
 });
 
 test('inside the ranking, the eval still has to hold: both tests, not either', () => {
-  // Ranked fifth, and it drops the position — being on the list is not enough.
+  // Ranked fifth, and still no better than the move that lost the game —
+  // being on the engine's list is not enough.
   assert.deepEqual(judgeRanked(puzzle, 'a2a3', TOP_LINES.medium), { verdict: 'fail', rank: 4 });
 });
 

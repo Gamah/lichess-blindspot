@@ -177,15 +177,54 @@ on `judgment` because `judgment` only exists for analysed games.
 Thresholds that are load-bearing and must not drift silently:
 - candidate: `|povDiff('white', prev, curr)| > 0.1`, or prev was mate <= 3 and
   curr is not mate
-- accept an alternative move: `povDiff(pov, yourEval, prevEval) > -0.04`
+- accept an alternative move: `povDiff(pov, yourEval, puzzle.eval) > +0.04`
+
+**That second one is the one place we knowingly leave lila, and the sign is
+the whole of it.** retroCtrl compares your move against `prevEval` — the
+position *before* the move — which measures it against the **best** move and
+allows it to fall 0.04 short. Correct for lila, where retro mode is a walk
+through an analysed game. Wrong here: a Blindspot puzzle is "you played this,
+play something else", the move played is on the board in red from the first
+second, and the question being asked is whether you improved on it. Judged
+against `prevEval`, a position with one saving move refuses every other answer
+— which on a setting called Easy is near-perfect play rather than leniency,
+and is what the port shipped with until it was caught by someone playing the
+engine's own second line and being told no.
+
+So the baseline is `puzzle.eval`, the eval after the move played, and the
+tolerance flips: `IMPROVE_DIFF = -ACCEPT_DIFF`. It has to flip. Against the
+best move you are allowed to be slightly worse; against the mistake, "not
+worse" scores a diff of exactly 0 and a move as bad as the blunder would win.
+You must beat it by more than the noise. Same 0.04, derived from `ACCEPT_DIFF`
+so there is still one number tracking lila.
+
+The measured consequence, on the position that prompted it (`0akgYMDV` ply 40,
+Black, `prevEval` +1.33, `f5` played at +4.13):
+
+| move | vs `prevEval` (old) | vs `f5` (now) |
+| --- | --- | --- |
+| Kh7 (best) | -0.0035 win | +0.1971 win |
+| f6 | -0.0736 **fail** | +0.1270 win |
+| a4 | -0.0752 **fail** | +0.1254 win |
+| c4 | -0.0853 **fail** | +0.1153 win |
+
+**The eval test is now the weak one, and that is deliberate.** In a badly lost
+position most legal moves beat the blunder, so it will pass nearly everything
+there. The top-5 / top-2 rank gate is what Medium and Hard actually rest on;
+Easy is meant to be forgiving and previously was not.
 
 ## Difficulty
 
 **Ours, not lila's — lila has only the eval test.** `TOP_LINES` in
 `src/solve/retro.ts`: easy `0`, medium `5`, hard `2`. It is a *second* test, not
-a replacement: on medium and hard a move must pass the -0.04 eval test **and**
-be inside the top n of the engine's ranking of the position. Being ranked fifth
-is no defence in a position where only two moves hold.
+a replacement: on medium and hard a move must pass the eval test **and** be
+inside the top n of the engine's ranking of the position.
+
+Since the eval test only asks "did you beat what you played", the rank gate is
+carrying most of the weight — it is what stops Medium and Hard accepting any of
+the several moves that beat a blunder. The eval test's remaining job on those
+settings is the awkward case the rank gate cannot see: a line the engine
+*named* that is still no better than the move that lost the game.
 
 - Easy is the behaviour that predates the setting, and is the default, so a
   returning player who picks it is where they were.
