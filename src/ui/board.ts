@@ -53,6 +53,15 @@ export class Board {
         dests: movable ? (dests(fen) as Map<Key, Key[]>) : new Map(),
       },
     });
+    this.cg.setShapes([]);
+  }
+
+  /**
+   * An arrow for one move. Used to show what the game actually did with a
+   * position, once solving it is over and the context is allowed back.
+   */
+  drawMove(uci: string, brush = 'red'): void {
+    this.cg.setShapes([{ orig: uci.slice(0, 2) as Key, dest: uci.slice(2, 4) as Key, brush }]);
   }
 
   /** Rewind to the position we handed out, after a wrong move. */

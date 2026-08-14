@@ -413,6 +413,9 @@ export class App {
     const solve = this.solve;
     if (!solve || !this.profile) return;
     this.board?.freeze();
+    // Finding it is the moment the context comes back, so show what the game
+    // did instead. Red, and only once the answer can no longer be a hint.
+    if (result === 'win') this.board?.drawMove(solve.puzzle.played.uci);
     this.deck.markSolved([solve.puzzle.id]);
     await this.profile.recordSolve({
       puzzleId: solve.puzzle.id,
