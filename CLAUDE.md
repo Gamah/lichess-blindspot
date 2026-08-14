@@ -57,6 +57,12 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
   - `exportOne` (`/game/export/{id}`) has **no** concurrency limiter at all,
     which is why single-game export keeps working from an address the by-user
     export is refusing. That asymmetry is the diagnostic, not a coincidence.
+  - **Do not probe the by-user export from this host.** It shares an IP with the
+    machine the app is tested on, so a leaked slot here breaks the app there,
+    and the recovery is an hour of silence rather than a smaller request rate.
+    Sample with `/game/export/{id}` (no limiter) or the fixtures in `test/`.
+    If a live check is genuinely unavoidable: one request, `-o` to a file, and
+    write down the time.
   - Two ways we leaked slots ourselves: `fetchGames` abandoned mid-iteration
     without cancelling the reader (fixed — it cancels in a `finally`), and
     `curl ... | head`, where the truncated pipe kills curl mid-stream. **Write
