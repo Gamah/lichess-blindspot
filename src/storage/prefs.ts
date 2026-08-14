@@ -68,3 +68,18 @@ export const saveSettings = (patch: Partial<Settings>): Settings => {
   write(SETTINGS, next);
   return next;
 };
+
+/**
+ * Everything this module keeps, gone: recent usernames and settings both. Used
+ * by the schema reset, which starts the browser over rather than reasoning
+ * about which of yesterday's records are still meaningful.
+ */
+export const forgetPrefs = (): void => {
+  for (const key of [RECENT, SETTINGS]) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // A browser that refuses storage has nothing to forget.
+    }
+  }
+};

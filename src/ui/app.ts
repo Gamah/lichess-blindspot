@@ -21,7 +21,13 @@ import {
   storagePressure,
   type SolveRecord,
 } from '../storage/db.ts';
-import { recentUsernames, rememberUsername, saveSettings, settings } from '../storage/prefs.ts';
+import {
+  forgetPrefs,
+  recentUsernames,
+  rememberUsername,
+  saveSettings,
+  settings,
+} from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
 import { Board, type PlayedMove } from './board.ts';
 
@@ -417,12 +423,12 @@ export class App {
    * The one-time reset. This version stores what it works out on the game
    * itself rather than as puzzle records, and a store written by the previous
    * one cannot be brought forward: the evals its puzzles were built from were
-   * never written down, so there is nothing to convert. Better to say that
-   * plainly than to half-read the old shape forever.
+   * never written down, so there is nothing to convert.
    *
-   * Solve history is kept, and that is not a consolation prize: a solve is
-   * keyed by `gameId:ply`, so once the games are back and analysed again,
-   * everything already solved is still solved and stays out of the deck.
+   * So nothing is carried across — not the solve history either, though it
+   * technically could be. Half-migrating leaves every future version reasoning
+   * about a store that is part old and part new, for a saving nobody asked
+   * for. Say it plainly once and start clean.
    */
   private renderReset(profile: Profile): void {
     // Its "lichess is busy" ticker hunts for `form.start button`, and there is
@@ -433,16 +439,16 @@ export class App {
         <h1>Blindspot has changed how it stores things</h1>
         <p>This version keeps the analysis on the game it came from, instead of keeping the
           positions it produced. It is a better arrangement — changing what a position shows no
-          longer needs everything rebuilding — but the old store cannot be converted into the
-          new one, because the evaluations behind those positions were never saved.</p>
-        <p><strong>So the games for ${escape(profile.username)} have to be fetched and analysed
-          again.</strong> That takes a few minutes in the background, and you can solve while it
-          happens.</p>
-        <p><strong>Your solving history is kept.</strong> Positions you have already solved stay
-          solved and will not come back round.</p>
+          longer means rebuilding everything — but the old store cannot be converted into the new
+          one, because the evaluations behind those positions were never saved.</p>
+        <p><strong>So everything this browser had stored is deleted and starts again:</strong>
+          the games, the positions, your solving history and your settings. The games are fetched
+          from lichess and analysed again, which takes a few minutes in the background — you can
+          solve while it happens — and positions you had already solved will come round again.</p>
+        <p>Nothing was on a server, so there is nothing to restore. This is a one-off; storing
+          the analysis rather than the positions is what stops it happening for the next change.</p>
         <form class="start">
-          <button type="submit">Start again</button>
-          <button type="button" id="elsewhere" class="quiet">Use a different name</button>
+          <button type="submit">Delete it and start again</button>
         </form>
       </main>
       ${footer()}`;
@@ -450,12 +456,14 @@ export class App {
       e.preventDefault();
       void this.doReset(profile);
     });
-    (this.root.querySelector('#elsewhere') as HTMLButtonElement).onclick = () =>
-      this.renderLanding('');
   }
 
   private async doReset(profile: Profile): Promise<void> {
     await profile.reset();
+    // The prefs box is small and separate, but "start fresh" means it too:
+    // recent usernames and settings both go. The name they are about to carry
+    // on with is remembered again by `begin`.
+    forgetPrefs();
     // Straight back through the front door: `begin` finds a store it can read
     // this time, and everything from there is an ordinary first visit.
     this.profile = undefined;

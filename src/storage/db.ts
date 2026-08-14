@@ -127,17 +127,19 @@ export class Profile {
     }, false);
 
   /**
-   * Throw away everything but the solve history and stamp the current version.
+   * Everything for this username, gone, and the current version stamped on the
+   * empty store.
    *
-   * Solve history is the one thing worth carrying across, and the one thing
-   * that can be: a `solve:` key is `gameId:ply`, which is what the position is,
-   * not what a record of it looked like. So the games come back from lichess,
-   * get analysed again, and everything already solved is still solved.
+   * Solve history could in principle be carried across — a `solve:` key is
+   * `gameId:ply`, which is what a position *is* rather than what a record of it
+   * looked like. It isn't, deliberately. Keeping one table across a break means
+   * every future version has to reason about a store that is half old and half
+   * new, and the deck this version builds from re-fetched games is not the deck
+   * those solves were taken against. Cheaper to be honest once.
    */
   reset = (): Promise<void> =>
     this.use(async store => {
-      const keys = (await entries(store)).map(([k]) => k).filter(k => !isPrefixed(SOLVE)(k));
-      await delMany(keys, store);
+      await clear(store);
       await set(SCHEMA, SCHEMA_VERSION, store);
     }, undefined);
 

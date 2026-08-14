@@ -240,10 +240,14 @@ automatic purge back without solving "this deletes work the engine did".
 **Schema resets, `SCHEMA_VERSION` in `src/storage/db.ts`.** There is no
 migration machinery and there should not be. `Profile.stale()` is true when a
 store holds records but no current stamp; `App.renderReset` says what changed
-and why it cannot be converted, and `Profile.reset()` deletes everything except
-`solve:`. Solve history is kept because `gameId:ply` survives anything — the
-games come back from lichess, get analysed again, and what was solved stays
-solved. Version 2 was the change to derived puzzles: a version-1 store held
+and why it cannot be converted; `Profile.reset()` clears the store outright and
+`forgetPrefs()` takes localStorage with it. **Nothing is carried across, solve
+history included.** It could be — a `solve:` key is `gameId:ply`, which is what
+a position is rather than what a record of it looked like — and the deliberate
+choice is not to: keeping one table across a break leaves every later version
+reasoning about a store that is part old and part new, and the deck rebuilt
+from re-fetched games is not the deck those solves were taken against. Say it
+plainly once. Version 2 was the change to derived puzzles: a version-1 store held
 `puzzle:` records nothing reads plus games our engine had analysed whose evals
 were never written down and which `meta.analysed` guaranteed would never be
 looked at again. Neither is repairable, which is why this is a reset and not a
