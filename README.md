@@ -1,5 +1,7 @@
 # Blindspot
 
+**<https://gamah.github.io/lichess-blindspot/>**
+
 Puzzles from your own games, for board vision.
 
 Lichess' *Learn from your mistakes* walks you through the blunders of one game,
