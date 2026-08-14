@@ -258,19 +258,23 @@ export class Board {
 }
 
 /**
- * The rank, drawn on the arrowhead itself.
+ * The rank, drawn inside the arrowhead.
  *
  * Not chessground's `label`, which hardcodes a white-outlined disc behind the
  * text — five of those is a row of buttons rather than a ranking. `customSvg`
- * gives us the glyph on its own, and `center: 'label'` puts the 1×1 box's
- * middle exactly where that disc was: the junction of shaft and arrowhead, so
- * the number sat under the triangle rather than on it. Hence the nudge — half
- * an arrowhead further along the arrow, which needs the direction, which needs
- * the board orientation.
+ * gives us the glyph on its own, in a 100-unit box whose middle sits where
+ * that disc was: `labelCoords`, the junction of shaft and arrowhead. So the
+ * number needs moving *onto* the triangle, and sizing to fit inside it.
  *
- * Drawn at full opacity whatever the arrow's brush does, so rank 5 stays
- * readable at 0.28. White with a thick same-coloured outline underneath it, so
- * it reads on the triangle and on a bare square alike.
+ * Both come out of the arrowhead's actual geometry rather than taste.
+ * Chessground's marker path is `M0,0 V4 L3,2 Z` with default `markerUnits`,
+ * so the head is 3 stroke-widths long and 4 tall, and a stroke-width is
+ * `lineWidth / 64` of a square. The head therefore *shrinks with the rank*,
+ * because the brushes thin out as they fade — a fixed size would sit neatly in
+ * the first arrow and overflow the fifth.
+ *
+ * No outline. White at full opacity on a filled triangle is legible on its
+ * own, and a stroke around a glyph this small is most of its weight.
  */
 function rankNumber(
   rank: number,
@@ -278,22 +282,30 @@ function rankNumber(
   brush: string,
   orientation: Color,
 ): DrawShape['customSvg'] {
+  const width = RANK_BRUSHES[brush]?.lineWidth ?? 10;
   const [dx, dy] = towards(uci, orientation);
-  const x = 50 + dx * HEAD_NUDGE;
-  const y = 50 + dy * HEAD_NUDGE;
-  const colour = RANK_BRUSHES[brush]?.color ?? '#003088';
+  // Distance from `labelCoords` to the head's centroid, along the arrow. Both
+  // are fixed offsets back from the destination square: chessground puts the
+  // label 33/64 back and assumes that is the head's length, while the head is
+  // really `3 * width / 64` long and starts `10/64` back from the square. So
+  // the gap is `(23 - 2 * width) / 64` of a square — which is *negative* for
+  // the thickest arrow, whose head is longer than chessground's assumption.
+  // (When two arrows share a square both offsets grow by 10/64 and cancel.)
+  const nudge = ((23 - 2 * width) * 100) / 64;
+  // The head is 4 widths tall at its base and two-thirds of that at the
+  // centroid; a bit under half of that reads as sitting inside the triangle
+  // rather than filling it.
+  const size = width * 2.2;
+  const x = 50 + dx * nudge;
+  const y = 50 + dy * nudge;
   return {
     center: 'label',
     html:
       `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" ` +
       `dominant-baseline="central" font-family="Noto Sans, system-ui, sans-serif" ` +
-      `font-size="46" font-weight="700" paint-order="stroke" stroke="${colour}" ` +
-      `stroke-width="14" stroke-linejoin="round" fill="#fff">${rank}</text>`,
+      `font-size="${size.toFixed(1)}" font-weight="700" fill="#fff">${rank}</text>`,
   };
 }
-
-/** ~half an arrowhead, in the 100-unit box `customSvg` draws into. */
-const HEAD_NUDGE = 26;
 
 /**
  * Unit vector from a move's origin to its destination, in screen terms: x

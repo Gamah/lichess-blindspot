@@ -384,11 +384,22 @@ config.
 
 The numbers are a `customSvg`, not chessground's `label`: `renderLabel`
 hardcodes a white-outlined disc behind the text, and five of those read as a
-row of buttons rather than a ranking. `center: 'label'` puts the box where that
-disc was — the junction of shaft and arrowhead, i.e. *under* the triangle — so
-`rankNumber` nudges half an arrowhead further along, which is why it needs the
-move's direction and the board orientation. Drawn at full opacity whatever the
-brush does, so rank 5 is still readable at 0.28.
+row of buttons rather than a ranking. Plain white glyph, no outline, at full
+opacity whatever the brush does, so rank 5 is still readable at 0.28.
+
+Its size and position come out of the arrowhead's geometry rather than taste,
+because **the head shrinks with the rank** — the brushes thin as they fade, and
+one fixed size sits neatly in the first arrow and overflows the fifth. The
+marker path is `M0,0 V4 L3,2 Z` with default `markerUnits`, so a head is `3 *
+lineWidth / 64` of a square long and `4 *` that tall at its base. `center:
+'label'` anchors the box at `labelCoords`, which is a flat `33/64` back from
+the destination square — chessground's assumption about head length — while the
+real head starts `10/64` back and runs `3 * lineWidth / 64`. The gap between
+that anchor and the head's centroid is therefore `(23 - 2 * lineWidth) / 64`,
+**negative for the thickest arrow**, whose head is longer than the assumption.
+(When two arrows share a destination both offsets grow by `10/64` and cancel,
+so shortening needs no special case.) Sizing at `2.2 * lineWidth` puts every
+glyph at about half the head's height at that point, whatever its rank.
 
 **Draw anything that must survive as an auto-shape.** Pressing the board runs
 chessground's `drawClear`, which empties `drawable.shapes` but leaves
