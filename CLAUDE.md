@@ -392,14 +392,18 @@ because **the head shrinks with the rank** — the brushes thin as they fade, an
 one fixed size sits neatly in the first arrow and overflows the fifth. The
 marker path is `M0,0 V4 L3,2 Z` with default `markerUnits`, so a head is `3 *
 lineWidth / 64` of a square long and `4 *` that tall at its base. `center:
-'label'` anchors the box at `labelCoords`, which is a flat `33/64` back from
-the destination square — chessground's assumption about head length — while the
-real head starts `10/64` back and runs `3 * lineWidth / 64`. The gap between
-that anchor and the head's centroid is therefore `(23 - 2 * lineWidth) / 64`,
-**negative for the thickest arrow**, whose head is longer than the assumption.
-(When two arrows share a destination both offsets grow by `10/64` and cancel,
-so shortening needs no special case.) Sizing at `2.2 * lineWidth` puts every
-glyph at about half the head's height at that point, whatever its rank.
+'label'` anchors the box at `labelCoords`, a flat `33/64` back from the
+destination square, and the head's position comes from **`refX: 2.05`** — the
+marker point that lands on the line's end, which is itself `10/64` short of the
+square. In stroke-widths the base is 2.05 behind that anchor, the tip 0.95
+beyond it, and the centroid 1.05 behind, so the offset to aim for is `(23 -
+1.05 * lineWidth) / 64`. Assume instead that the tip is at the line's end and
+you land ~16 units short — which is exactly on the base of the triangle, and is
+the bug this went through twice. (When two arrows share a destination both
+offsets grow by `10/64` and cancel, so shortening needs no special case;
+chessground's extra `0.4` for a boxed-in knight move is not modelled.) Sizing
+at `2.2 * lineWidth` puts every glyph at about half the head's height there,
+whatever its rank.
 
 **Draw anything that must survive as an auto-shape.** Pressing the board runs
 chessground's `drawClear`, which empties `drawable.shapes` but leaves

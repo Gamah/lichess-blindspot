@@ -284,14 +284,25 @@ function rankNumber(
 ): DrawShape['customSvg'] {
   const width = RANK_BRUSHES[brush]?.lineWidth ?? 10;
   const [dx, dy] = towards(uci, orientation);
-  // Distance from `labelCoords` to the head's centroid, along the arrow. Both
-  // are fixed offsets back from the destination square: chessground puts the
-  // label 33/64 back and assumes that is the head's length, while the head is
-  // really `3 * width / 64` long and starts `10/64` back from the square. So
-  // the gap is `(23 - 2 * width) / 64` of a square — which is *negative* for
-  // the thickest arrow, whose head is longer than chessground's assumption.
-  // (When two arrows share a square both offsets grow by 10/64 and cancel.)
-  const nudge = ((23 - 2 * width) * 100) / 64;
+  // Distance from `labelCoords` to the head's centroid, along the arrow.
+  //
+  // The head is a marker with `refX: 2.05`, which is what anchors it to the
+  // line: marker point (2.05, 2) lands on the line's end, and the line ends
+  // 10/64 short of the destination square. The path is `M0,0 V4 L3,2 Z`, so in
+  // stroke-widths the base sits 2.05 *behind* that anchor, the tip 0.95 beyond
+  // it, and the centroid — a third of the way up from the base — 1.05 behind.
+  // A stroke-width is `width / 64` of a square, and `labelCoords` is a flat
+  // 33/64 back from the square, so the gap is `(23 - 1.05 * width) / 64`.
+  //
+  // Getting `refX` wrong here is what put the number on the base of the
+  // triangle rather than in it: assume the tip is at the line's end and the
+  // offset comes out ~16 units short.
+  //
+  // (When two arrows share a destination both offsets grow by 10/64 and
+  // cancel, so shortening needs no special case. The one thing not modelled is
+  // chessground's extra 0.4 nudge for a knight move boxed in by a neighbouring
+  // arrow, which would leave the number behind its head.)
+  const nudge = ((23 - 1.05 * width) * 100) / 64;
   // The head is 4 widths tall at its base and two-thirds of that at the
   // centroid; a bit under half of that reads as sitting inside the triangle
   // rather than filling it.
