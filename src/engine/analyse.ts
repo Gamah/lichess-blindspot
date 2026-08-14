@@ -8,6 +8,16 @@
 // showing someone: the puzzle's numbers all come from pass 2, so a candidate is
 // never accepted on sweep-quality evidence.
 //
+// **Finding a position and ranking it are separate searches on purpose.**
+// `rankCandidates` is a third pass, over what pass 2 confirmed. It would be
+// tempting to fold it into pass 2 — it wants the same position, the one before
+// the mistake — but pass 2's two searches are subtracted from each other to
+// measure the swing, and a MultiPV search on one side of that subtraction and
+// a single-line one on the other biases every candidate decision. Keeping them
+// apart also means the ranking's cost and depth can be changed without moving
+// the detection thresholds, which are lila's and are verified against lila's
+// own analysis by `npm run verify-analysis`.
+//
 // Takes an `Analyser` rather than the Engine class, so tests can drive it with
 // a table of positions.
 
@@ -122,14 +132,19 @@ export async function analyseGame(
 
     const step = steps[i]!;
     if (opts.skipPly && (await opts.skipPly(i, step))) continue;
-    // Before the move: the ranking, which gives us `best`, the line to show,
-    // and the alternatives a puzzle is judged against. After it: the eval the
-    // mistake actually led to.
-    const ranked = await rankPosition(engine, step.fen);
+    // Before the move: gives us `best` and the line to show. After it: the
+    // eval the mistake actually led to.
+    //
+    // Both single-line and both the same length, deliberately. This pair is
+    // subtracted from itself to decide whether the position is a candidate at
+    // all, so the two searches have to be like for like — a MultiPV search on
+    // one side and not the other biases every swing it measures. The ranking
+    // is therefore *not* taken from here even though this is the same position:
+    // it is `rankCandidates`, afterwards, on what survived.
+    const before = await engine.analyse({ fen: step.fen, movetime });
     await check();
     const after = await engine.analyse({ fen: step.after, movetime });
 
-    const before = ranked[0]!;
     // Safe to overwrite outright: i-1 is the other side's ply, so pass 2 never
     // wrote a variation there.
     analysis[i - 1] = toEntry(before.score);
@@ -141,7 +156,6 @@ export async function analyseGame(
     if (best && best !== step.uci) {
       entry.best = best;
       entry.variation = lineToSan(step.fen, before.pv.slice(0, 12)).join(' ');
-      entry.alts = toAlts(ranked);
       found++;
     }
     analysis[i] = entry;

@@ -173,6 +173,16 @@ export class Pipeline {
     return !this.exhausted && this.waitMs() === 0;
   }
 
+  /**
+   * Ask for the backlog to be walked again. Raising "positions per game" makes
+   * candidates that were never ranked into candidates that would be shown, and
+   * without this they would sit unranked — and so withheld — until the next
+   * session.
+   */
+  recheckBacklog(): void {
+    this.backlogDone = false;
+  }
+
   pause(): void {
     this.paused = true;
   }

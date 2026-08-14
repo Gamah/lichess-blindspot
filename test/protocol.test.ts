@@ -138,3 +138,64 @@ test('bestmove overrides a cut-off pv on a single line, but never reorders a ran
   const lines = await multi.analyseLines({ fen: 'x w', depth: 12, multiPv: 2 });
   assert.deepEqual(lines.map(l => l.pv[0]), ['e2e4', 'd2d4']);
 });
+
+test('a cut-off final iteration does not splice two depths into one ranking', async () => {
+  // What a movetime search really looks like at the end: depth 20 reported
+  // every rank, then depth 21 got through the first two before the clock
+  // stopped it. Taking each rank's deepest line independently would mix them
+  // and hand back f3f4 twice — measured against the real engine, not invented.
+  const session = new UciSession(cmd => {
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      session.receive('info depth 20 multipv 1 score cp 30 pv f3e3');
+      session.receive('info depth 20 multipv 2 score cp 20 pv f3f5');
+      session.receive('info depth 20 multipv 3 score cp 15 pv f3e4');
+      session.receive('info depth 20 multipv 4 score cp 10 pv f3f4');
+      session.receive('info depth 21 multipv 1 score cp 31 pv f3e3');
+      session.receive('info depth 21 multipv 2 score cp 21 pv f3f4');
+      session.receive('bestmove f3e3');
+    });
+  });
+  const lines = await session.analyseLines({ fen: 'x w', movetime: 50, multiPv: 4 });
+  assert.deepEqual(
+    lines.map(l => l.pv[0]),
+    ['f3e3', 'f3f5', 'f3e4', 'f3f4'],
+    'the last complete iteration, whole',
+  );
+  assert.ok(
+    lines.every(l => l.depth === 20),
+    'and not one line of it from a different depth',
+  );
+});
+
+test('a deeper half-iteration does not displace the last complete one', async () => {
+  const session = new UciSession(cmd => {
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      session.receive('info depth 8 multipv 1 score cp 30 pv e2e4');
+      session.receive('info depth 8 multipv 2 score cp 20 pv d2d4');
+      session.receive('info depth 9 multipv 1 score cp 31 pv d2d4');
+      session.receive('bestmove d2d4');
+    });
+  });
+  // Depth 9 never got to rank 2, so depth 8 is the last thing the engine said
+  // in full — and a full ranking one ply shallower beats half of a deeper one.
+  const lines = await session.analyseLines({ fen: 'x w', movetime: 50, multiPv: 2 });
+  assert.deepEqual(lines.map(l => l.pv[0]), ['e2e4', 'd2d4']);
+});
+
+test('and if no iteration was ever complete, one move still cannot hold two ranks', async () => {
+  const session = new UciSession(cmd => {
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      // Rank 2 was only ever reported at depth 8, rank 1 only at depth 9: no
+      // single iteration has both, so they have to be merged, and the merge is
+      // where the same move can turn up twice.
+      session.receive('info depth 8 multipv 2 score cp 20 pv d2d4');
+      session.receive('info depth 9 multipv 1 score cp 31 pv d2d4');
+      session.receive('bestmove d2d4');
+    });
+  });
+  const lines = await session.analyseLines({ fen: 'x w', movetime: 50, multiPv: 2 });
+  assert.deepEqual(lines.map(l => l.pv[0]), ['d2d4'], 'the better rank keeps it');
+});

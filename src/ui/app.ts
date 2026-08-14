@@ -358,7 +358,11 @@ export class App {
       const value = Number((e.target as HTMLSelectElement).value);
       saveSettings({ maxPerGame: value });
       // Retroactive, because a puzzle is a view over a stored game rather than
-      // a record: the cap can simply be applied again to everything.
+      // a record: the cap can simply be applied again to everything. Raising it
+      // can turn up candidates nothing has ranked, though, and those stay
+      // withheld until the engine has been round them — so the backlog is
+      // opened again rather than left until the next session.
+      this.pipeline?.recheckBacklog();
       await this.buildDeck();
       this.renderCounters();
       status(
@@ -366,8 +370,10 @@ export class App {
           value === 0
             ? 'Taking every mistake it finds from each game'
             : `Taking up to ${value} position${value === 1 ? '' : 's'} from each game`
-        }. Deck rebuilt: ${this.deck.unsolvedCount()} waiting.`,
+        }. Deck rebuilt: ${this.deck.unsolvedCount()} waiting. Any positions this newly
+         allows are ranked in the background and appear as they are done.`,
       );
+      void this.refill();
     };
     (panel.querySelector('#threads') as HTMLSelectElement).onchange = e => {
       const value = Number((e.target as HTMLSelectElement).value);

@@ -87,6 +87,39 @@ const toWhite = (score: EvalScore, turn: Color): EvalScore =>
       ? { mate: -score.mate }
       : { cp: -score.cp! };
 
+/**
+ * The deepest iteration that reported every rank, or — if none did, which is a
+ * search cut off before it finished even one — the deepest that reported
+ * anything, topped up from shallower ones for the ranks it is missing.
+ *
+ * `widest` is how many ranks the engine ever offered, which is not `multiPv`:
+ * a position with three legal moves reports three lines however many were
+ * asked for.
+ */
+function pickIteration(
+  byDepth: ReadonlyMap<number, ReadonlyMap<number, EngineLine>>,
+  widest: number,
+): EngineLine[] {
+  const depths = [...byDepth.keys()].sort((a, b) => b - a);
+  const complete = depths.find(d => byDepth.get(d)!.size === widest);
+  const merged = new Map<number, EngineLine>();
+  // Deepest first, so a shallower iteration only ever fills a gap.
+  for (const depth of complete !== undefined ? [complete] : depths)
+    for (const [rank, line] of byDepth.get(depth)!) if (!merged.has(rank)) merged.set(rank, line);
+
+  const out: EngineLine[] = [];
+  const seen = new Set<string>();
+  for (const [, line] of [...merged.entries()].sort((a, b) => a[0] - b[0])) {
+    // Belt and braces: whatever the iterations did, one move cannot hold two
+    // ranks. The better rank keeps it.
+    const move = line.pv[0];
+    if (move && seen.has(move)) continue;
+    if (move) seen.add(move);
+    out.push(line);
+  }
+  return out;
+}
+
 /** Whose turn it is in a FEN. */
 export function fenTurn(fen: string): Color {
   return fen.split(' ')[1] === 'b' ? 'black' : 'white';
@@ -191,9 +224,19 @@ export class UciSession {
     const turn = fenTurn(req.fen);
     const limit = req.movetime !== undefined ? `movetime ${req.movetime}` : `depth ${req.depth ?? 12}`;
     const multiPv = Math.max(1, req.multiPv ?? 1);
-    // One deepest line per rank. A MultiPV search reprints all of them at each
-    // new depth, so the last of each is the one we want.
-    const best = new Map<number, EngineLine>();
+    /**
+     * Lines by depth, then by rank. Deliberately not one map of "deepest line
+     * per rank": a movetime search is cut off mid-iteration, so the last depth
+     * usually has ranks 1..k and nothing below, and taking each rank's deepest
+     * independently splices two different iterations together. That produces
+     * the same move at two ranks — measured, not theorised: a 12-second search
+     * came back `f3e3 f3f5 f3e4 f3f4 f3f4`.
+     *
+     * So an iteration is used whole, and the one used is the deepest that
+     * finished.
+     */
+    const byDepth = new Map<number, Map<number, EngineLine>>();
+    let widest = 1;
     return this.exchange<EngineLine[]>(
       () => {
         // Set every time rather than only when it changes: this session is
@@ -209,11 +252,13 @@ export class UciSession {
         // often a bare depth report with no score at all.
         if (info) {
           const rank = info.multiPv ?? 1;
-          const held = best.get(rank);
-          if (!held || info.depth >= held.depth) best.set(rank, info);
+          widest = Math.max(widest, rank);
+          const at = byDepth.get(info.depth) ?? new Map<number, EngineLine>();
+          at.set(rank, info);
+          byDepth.set(info.depth, at);
         }
         if (!line.startsWith('bestmove')) return;
-        const lines = [...best.entries()].sort((a, b) => a[0] - b[0]).map(([, l]) => l);
+        const lines = pickIteration(byDepth, widest);
         const head = lines[0];
         if (!head) return fail(new Error(`No evaluation for ${req.fen}`));
         const bestmove = parseBestmove(line);

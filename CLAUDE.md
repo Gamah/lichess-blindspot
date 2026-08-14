@@ -220,16 +220,25 @@ returns exactly the positions that were withheld, and both go through the same
 shown (the `maxPerGame` cap included — raising it queues work rather than
 producing positions instantly, which is a change from when derivation was free).
 
-**Where the ranking comes from.** `analyseGame`'s pass 2 already searched the
-before-position for `best` and `variation`, so it now does that search with
-MultiPV and writes `alts` from the same result — our own analysis pays almost
-nothing extra. Games *lichess* analysed are the expensive case: the export
-carries one variation per ply and there is no way to ask for four more, so
-every candidate in them needs a `rankCandidates` search that we did not used to
-pay. `Pipeline.rankBacklog` does that once per session, before any fetching,
-over the stored games; `Pipeline.analyse` does it for newly fetched ones. It is
-**not** a re-analysis — the sweep already happened and the candidates are known,
-so it is one search per position that would be shown.
+**Finding a position and ranking it are separate searches, deliberately.**
+`analyseGame`'s pass 2 searches the same position the ranking wants — the one
+before the mistake — and folding the two together is the obvious saving and the
+wrong one: pass 2's two searches are *subtracted from each other* to measure
+the swing, and a MultiPV search on one side of that subtraction against a
+single-line one on the other biases every candidate decision it makes. So pass
+2 stays exactly as `npm run verify-analysis` verified it, and `rankCandidates`
+is a third pass over what pass 2 confirmed. It also means the ranking's cost and
+depth can move without disturbing lila's thresholds.
+
+Every game therefore takes the same ranking path, whoever did the analysis:
+`Pipeline.rankBacklog` walks the stored games once per session before any
+fetching, and `Pipeline.analyse` handles newly fetched ones. Games lichess
+analysed are the expensive case only because they arrive with *no* rankings at
+all — the export carries one variation per ply and no way to ask for four more.
+It is **not** a re-analysis: the sweep already happened and the candidates are
+known, so it is one search per position that would be shown, roughly 2 s each.
+`Pipeline.recheckBacklog()` reopens the pass, which raising `maxPerGame` has to
+do — the extra candidates it allows have never been ranked.
 
 **MultiPV is sent on every search**, `analyse` included, because one session is
 shared between the background pass and the solve loop and a MultiPV left at 5
@@ -240,10 +249,32 @@ line; the next ordinary search is single-line.
 
 `scripts/rank-stability.ts` is what `RANK_MOVETIME` is set from — it ranks a
 real game's positions at several budgets against a long reference search and
-reports how often the best move, the top 2, and the whole order survive. Re-run
-it before changing the number, and keep the copy honest about what it says: the
-app tells the player, in Settings and on the notice and under the board, that
-this is a seconds-long search and not a deep one.
+reports how often the best move, the top 2, and the whole order survive.
+
+**Measured 2026-08-14**, 10 midgame positions from one game (`NIvSfA68`), 4
+threads, against a 12-second reference:
+
+| budget | best move | same top 2 | top-5 overlap | identical order |
+| --- | --- | --- | --- | --- |
+| 500 ms | 90% | 70% | 92% | 40% |
+| 1000 ms | 100% | 60% | 88% | 20% |
+| 2000 ms | 90% | 70% | 92% | 30% |
+| 4000 ms | 100% | 70% | 92% | 40% |
+
+Small sample, so read the shape and not the digits — but the shape is the
+point: **more time does not buy stability.** 4 s is no better than 0.5 s, the
+reference search itself is not deterministic between runs (a re-run reordered
+one position's top two), and the best move is nearly always right while the
+exact order almost never survives. So do not reach for a bigger
+`RANK_MOVETIME` expecting the ranking to settle down; the variance is the
+positions and the thread nondeterminism, not the budget. 2 s is chosen as
+comfortably past the point where more stops helping.
+
+The consequence for Hard is real and worth stating: its top-2 boundary
+disagrees with a deep search perhaps a third of the time, so it will sometimes
+refuse a move a stronger engine ranks second. That is why the copy in Settings,
+on the notice, and under the board says this is a seconds-long search and not a
+deep one — keep it honest.
 
 ## This uses the processor, and that is the point
 
