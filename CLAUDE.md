@@ -153,6 +153,25 @@ The candidate finder and solve state machine are ports of lila's
 names, same thresholds, same comments where they explain a magic number. When
 lila changes a threshold we want the diff to be obvious.
 
+**Nothing serves the puzzle positions.** *Learn from your mistakes* is computed
+in the browser by `retroCtrl` + `nodeFinder`, so there is no endpoint to ask;
+what the API serves is the *input* (the per-ply `analysis` array), which we use
+unmodified whenever lichess has already analysed a game. Re-deriving the
+selection is the point, not a workaround — it has to produce the same deck for
+the games nobody has analysed, and `request-analysis` is app-only.
+
+The export does carry lichess' own classification in `judgment`, and it is the
+same test as ours arrived at from the other side. From
+`modules/tree/src/main/Advice.scala` (read 2026-08-14):
+`List(.3 -> Blunder, .2 -> Mistake, .1 -> Inaccuracy)` against
+`currentWinningChances - prevWinningChances`. That 0.1 floor is our candidate
+threshold: `Advice` measures the delta on a 0..1 scale while ceval's
+`povChances` runs -1..1, which is what the `/ 2` in `povDiff` is for. So
+"lichess gave it a judgment" and "we call it a candidate" agree by construction
+— useful as a cross-check (`npm run verify-analysis` does exactly that), and a
+reason to be suspicious if they ever diverge. We select on the swing rather than
+on `judgment` because `judgment` only exists for analysed games.
+
 Thresholds that are load-bearing and must not drift silently:
 - candidate: `|povDiff('white', prev, curr)| > 0.1`, or prev was mate <= 3 and
   curr is not mate
