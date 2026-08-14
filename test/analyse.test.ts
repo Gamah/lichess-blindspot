@@ -86,3 +86,39 @@ test('fromPly keeps the opening out of pass 2', async () => {
     'nothing deep-searched before the middlegame',
   );
 });
+
+test('maxCandidates stops the expensive pass, not the sweep', async () => {
+  // A game with a mistake on every one of white's plies from index 2 on.
+  const moves = ['e4', 'e5', 'Nf3', 'Nc6', 'Ng5', 'Nf6', 'Nxf7', 'Kxf7'];
+  const steps2 = replay(moves);
+  const swinging = [20, 15, -400, -390, -800, -790, -1200, -1190];
+
+  class Swings implements Analyser {
+    seen: Request[] = [];
+    analyse(req: Request): Promise<EngineLine> {
+      this.seen.push(req);
+      const index = steps2.findIndex(s => s.after === req.fen);
+      return Promise.resolve({
+        depth: 12,
+        score: { cp: swinging[index]! },
+        // Never the move played, so every flagged ply becomes a candidate.
+        pv: ['e1e2'],
+      });
+    }
+  }
+
+  const uncapped = new Swings();
+  await analyseGame(uncapped, steps2, { pov: 'white' });
+  const deepOf = (e: Swings) => e.seen.filter(r => r.movetime !== undefined).length;
+  assert.ok(deepOf(uncapped) >= 4, 'several mistakes to find');
+
+  const capped = new Swings();
+  const analysis = await analyseGame(capped, steps2, { pov: 'white', maxCandidates: 1 });
+  assert.equal(deepOf(capped), 2, 'one candidate is one before-search and one after-search');
+  assert.equal(
+    capped.seen.filter(r => r.depth !== undefined).length,
+    steps2.length,
+    'the sweep still covers the whole game — a swing is only visible against the previous ply',
+  );
+  assert.equal(analysis.filter(a => a?.variation).length, 1);
+});

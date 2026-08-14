@@ -12,6 +12,7 @@ import type { Analyser } from '../engine/analyse.ts';
 import { OpeningBook, type BookStats } from '../lichess/explorer.ts';
 import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
 import { purgeIfTight, type Profile } from '../storage/db.ts';
+import { settings } from '../storage/prefs.ts';
 
 export interface PipelineEvents {
   /** New puzzles, already stored. */
@@ -261,9 +262,12 @@ export class Pipeline {
 
     // Games lichess has already analysed ship their evals in the export, and
     // cost us nothing.
+    // Read per game rather than per session, so changing the setting takes
+    // effect on the next game instead of the next reload.
+    const maxPerGame = settings().maxPerGame;
     const analysis = game.analysis?.length
       ? game.analysis
-      : await this.engineAnalysis(steps, pov, isBook);
+      : await this.engineAnalysis(steps, pov, isBook, maxPerGame);
 
     const candidates = findCandidates(moves, analysis, { pov });
     const kept: typeof candidates = [];
@@ -272,7 +276,11 @@ export class Pipeline {
       else kept.push(c);
     }
 
-    const puzzles = buildPuzzles(game.id, steps, kept, pov, Date.now());
+    // The engine path already stopped early; a game lichess analysed for us
+    // costs nothing to find but is capped too, so a deck looks the same either
+    // way.
+    const chosen = maxPerGame > 0 ? kept.slice(0, maxPerGame) : kept;
+    const puzzles = buildPuzzles(game.id, steps, chosen, pov, Date.now());
     // A book alternative is a right answer, not just a cancelled mistake, so
     // the list travels with the puzzle for the solver to accept.
     for (const puzzle of puzzles) {
@@ -295,11 +303,13 @@ export class Pipeline {
     steps: readonly ReplayStep[],
     pov: 'white' | 'black',
     isBook: (index: number) => Promise<boolean>,
+    maxCandidates: number,
   ) {
     this.emit({ engineBusy: true });
     const engine = await this.engine();
     return analyseGame(engine, steps, {
       pov,
+      maxCandidates,
       skipPly: index => isBook(index),
       signal: this.abort.signal,
       beforeEach: () => this.gate(),

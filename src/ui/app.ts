@@ -14,7 +14,7 @@ import { ExportError, type ExportedGame } from '../lichess/export.ts';
 import type { BookStats } from '../lichess/explorer.ts';
 import { Solve } from '../solve/retro.ts';
 import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
-import { recentUsernames, rememberUsername } from '../storage/prefs.ts';
+import { recentUsernames, rememberUsername, saveSettings, settings } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
 import { Board, type PlayedMove } from './board.ts';
 
@@ -188,7 +188,7 @@ export class App {
       <header class="topbar">
         <span class="who">${escape(this.profile?.username ?? '')}</span>
         <span class="spacer"></span>
-        <button id="storage" class="quiet">Storage</button>
+        <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
       </header>
       <main class="solving">
@@ -211,7 +211,7 @@ export class App {
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
-    (this.root.querySelector('#storage') as HTMLButtonElement).onclick = () => void this.toggleStorage();
+    (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.toggleSettings();
   }
 
   /** Back to the landing screen, with the background work stopped. */
@@ -229,7 +229,7 @@ export class App {
     this.renderLanding(previous);
   }
 
-  private async toggleStorage(): Promise<void> {
+  private async toggleSettings(): Promise<void> {
     const panel = this.root.querySelector('#panel') as HTMLElement | null;
     if (!panel || !this.profile) return;
     if (!panel.hidden) {
@@ -238,25 +238,63 @@ export class App {
     }
     const estimate = await storageEstimate();
     const solved = this.deck.solvedCount();
+    const chosen = settings().maxPerGame;
+    const options = [1, 2, 3, 5, 10, 0]
+      .map(
+        n =>
+          `<option value="${n}"${n === chosen ? ' selected' : ''}>${
+            n === 0 ? 'every one it finds' : `${n} position${n === 1 ? '' : 's'}`
+          }</option>`,
+      )
+      .join('');
+
     panel.hidden = false;
     panel.innerHTML = `
-      <h2>Storage</h2>
-      <p class="line">${
-        estimate
-          ? `${mb(estimate.usage)} used of ${mb(estimate.quota)} available`
-          : 'This browser will not say how much space it is using.'
-      }</p>
-      <p class="line"><span class="label">Openings</span> ${bookLine(this.pipeline?.bookStats())}</p>
-      <p class="hint">Games can always be fetched again. Puzzles and your ${solved} solved
-        position${solved === 1 ? '' : 's'} cannot, and are never purged automatically.</p>
-      <div class="controls">
-        <button id="purge" class="quiet">Purge stored games</button>
-        <button id="unsolve" class="quiet">Bring back solved</button>
-        <button id="wipe" class="quiet danger">Delete everything for ${escape(
-          this.profile.username,
-        )}</button>
-        <button id="close">Close</button>
+      <div class="panel-head">
+        <h2>Settings</h2>
+        <button id="close" class="quiet">Close</button>
       </div>
+
+      <div class="setting">
+        <label for="max-per-game">Positions per game</label>
+        <select id="max-per-game">${options}</select>
+        <p class="hint">Finding mistakes is cheap; confirming one costs a pair of second-long
+          searches. Fewer per game means games are analysed faster and the deck draws from a
+          wider spread of them. Applies to games analysed from now on.</p>
+      </div>
+
+      <div class="setting">
+        <span class="label-text">Stored games</span>
+        <button id="purge" class="quiet">Purge</button>
+        <p class="hint">${
+          estimate
+            ? `Using ${mb(estimate.usage)} of ${mb(estimate.quota)} available. `
+            : 'This browser will not say how much space it is using. '
+        }Games can always be fetched from lichess again, so they are the only thing ever
+          discarded — automatically, once the quota gets tight.</p>
+      </div>
+
+      <div class="setting">
+        <span class="label-text">Solved positions</span>
+        <button id="unsolve" class="quiet">Bring back ${solved}</button>
+        <p class="hint">Solved positions leave the shuffle but stay stored. This puts them back
+          in, which is a way to revisit them without re-analysing anything.</p>
+      </div>
+
+      <div class="setting">
+        <span class="label-text">This profile</span>
+        <button id="wipe" class="quiet danger">Delete ${escape(this.profile.username)}</button>
+        <p class="hint">Games, puzzles and solve history for this username, gone. The engine's
+          neural net is shared and stays.</p>
+      </div>
+
+      <div class="setting diagnostics">
+        <span class="label-text">Opening explorer</span>
+        <span class="value">${bookLine(this.pipeline?.bookStats())}</span>
+        <p class="hint">Opening moves the masters play are dropped rather than served as
+          mistakes. If lookups are failing, every opening candidate is being dropped instead.</p>
+      </div>
+
       <p class="line" id="panel-status"></p>`;
 
     const status = (text: string) => {
@@ -264,6 +302,15 @@ export class App {
       if (el) el.textContent = text;
     };
     (panel.querySelector('#close') as HTMLButtonElement).onclick = () => (panel.hidden = true);
+    (panel.querySelector('#max-per-game') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      saveSettings({ maxPerGame: value });
+      status(
+        value === 0
+          ? 'Taking every mistake it finds from each game.'
+          : `Taking up to ${value} position${value === 1 ? '' : 's'} from each game analysed from now on.`,
+      );
+    };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
       const dropped = await this.profile?.purgeGames();
       status(`${dropped ?? 0} game payload${dropped === 1 ? '' : 's'} dropped.`);

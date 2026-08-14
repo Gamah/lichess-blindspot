@@ -3,6 +3,7 @@
 // nothing here competes with the deck for space.
 
 const RECENT = 'blindspot.recent';
+const SETTINGS = 'blindspot.settings';
 const MAX_RECENT = 8;
 
 const read = <T>(key: string, fallback: T): T => {
@@ -37,3 +38,27 @@ export const forgetUsername = (username: string): void =>
     RECENT,
     recentUsernames().filter(u => u.toLowerCase() !== username.toLowerCase()),
   );
+
+export interface Settings {
+  /**
+   * Take at most this many positions from any one game; 0 for every one it
+   * finds. This is the analysis budget dial as much as a taste dial: the sweep
+   * that locates mistakes is cheap, but each one accepted costs a pair of
+   * second-long searches, and a deck does not want ten positions out of the
+   * same game anyway.
+   */
+  maxPerGame: number;
+}
+
+export const DEFAULT_SETTINGS: Settings = { maxPerGame: 3 };
+
+export const settings = (): Settings => ({
+  ...DEFAULT_SETTINGS,
+  ...read<Partial<Settings>>(SETTINGS, {}),
+});
+
+export const saveSettings = (patch: Partial<Settings>): Settings => {
+  const next = { ...settings(), ...patch };
+  write(SETTINGS, next);
+  return next;
+};

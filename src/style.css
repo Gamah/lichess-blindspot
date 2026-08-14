@@ -360,6 +360,68 @@ button.danger:hover {
   display: none;
 }
 
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.panel-head h2 {
+  margin: 0;
+}
+
+/* One row per setting: name on the left, the control on the right, and the
+   reason it exists underneath, where it does not compete with either. */
+.setting {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.setting label,
+.setting .label-text {
+  font-weight: 600;
+}
+
+.setting .hint,
+.setting .value {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.setting .value {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.setting select {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.diagnostics .label-text {
+  font-weight: 400;
+  color: var(--dim);
+}
+
+#panel-status:empty {
+  display: none;
+}
+
+#panel-status {
+  margin: 0.75rem 0 0;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
 /* Promotion chooser: over the board, because that is where the pawn is. */
 
 .board-wrap {

@@ -34,6 +34,13 @@ export interface AnalyseOptions {
   skipPly?: (index: number, step: ReplayStep) => Promise<boolean>;
   sweepDepth?: number;
   deepMovetime?: number;
+  /**
+   * Stop after this many mistakes have been confirmed, leaving the rest of the
+   * game unsearched. 0 or undefined means all of them. The sweep still covers
+   * the whole game — it has to, since a swing is only visible against the
+   * previous ply — but the expensive half stops early.
+   */
+  maxCandidates?: number;
   onProgress?: (done: number, total: number) => void;
   /**
    * Awaited before every search. The solve loop shares this engine, and a
@@ -89,7 +96,9 @@ export async function analyseGame(
   }
 
   // Pass 2. Only where the sweep saw the eval move on one of our plies.
+  let found = 0;
   for (let i = 1; i < steps.length; i++) {
+    if (opts.maxCandidates && found >= opts.maxCandidates) break;
     if (!ours(i)) continue;
     const prev = scoreOf(analysis[i - 1]);
     const curr = scoreOf(analysis[i]);
@@ -115,6 +124,7 @@ export async function analyseGame(
     if (best && best !== step.uci) {
       entry.best = best;
       entry.variation = lineToSan(step.fen, before.pv.slice(0, 12)).join(' ');
+      found++;
     }
     analysis[i] = entry;
   }
