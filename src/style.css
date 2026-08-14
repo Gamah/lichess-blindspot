@@ -1,0 +1,324 @@
+/* Dark, quiet, and deliberately short of things to read. The screen during a
+   solve should hold the board and one sentence. */
+
+:root {
+  --bg: #161512;
+  --panel: #262421;
+  --line: #3d3a34;
+  --text: #cfcbc4;
+  --dim: #8b8880;
+  --good: #7fb069;
+  --bad: #d16a6a;
+  --accent: #629924;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+main {
+  flex: 1;
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+/* --- landing / loading --- */
+
+.landing,
+.loading {
+  max-width: 34rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.tagline,
+.hint,
+.detail {
+  color: var(--dim);
+}
+
+.hint {
+  font-size: 0.9rem;
+}
+
+form.start {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0 0.5rem;
+  flex-wrap: wrap;
+}
+
+input,
+button {
+  font: inherit;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  padding: 0.6rem 0.9rem;
+  background: var(--panel);
+  color: var(--text);
+}
+
+input {
+  flex: 1 1 14rem;
+}
+
+button {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.1);
+}
+
+button#skip,
+button#solution {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.bar {
+  height: 6px;
+  background: var(--panel);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 1rem 0 0.5rem;
+}
+
+.fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.error,
+.warn {
+  border-left: 3px solid var(--bad);
+  padding-left: 0.75rem;
+  color: var(--dim);
+}
+
+.warn {
+  border-left-color: var(--dim);
+  font-size: 0.9rem;
+}
+
+/* --- solving --- */
+
+.solving {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(260px, 22rem);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.board-wrap {
+  aspect-ratio: 1;
+  width: 100%;
+}
+
+.board {
+  width: 100%;
+  height: 100%;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+  min-height: 12rem;
+}
+
+.feedback strong {
+  display: block;
+}
+
+.feedback span {
+  color: var(--dim);
+}
+
+.good {
+  color: var(--good);
+}
+
+.bad {
+  color: var(--bad);
+}
+
+.reveal:empty {
+  display: none;
+}
+
+.reveal .line {
+  margin: 0.25rem 0;
+  font-size: 0.95rem;
+}
+
+.label {
+  color: var(--dim);
+  display: inline-block;
+  min-width: 4.5rem;
+}
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: auto;
+  flex-wrap: wrap;
+}
+
+.counters {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.working {
+  color: var(--accent);
+}
+
+footer {
+  text-align: center;
+  padding: 1.5rem 1rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 780px) {
+  .solving {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- top bar, storage panel --- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  width: min(1100px, 100%);
+  margin: 0 auto;
+}
+
+.who {
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+button.quiet {
+  background: transparent;
+  color: var(--dim);
+  border-color: var(--line);
+  padding: 0.35rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+button.quiet:hover {
+  color: var(--text);
+}
+
+button.danger:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.panel {
+  width: min(1100px, 100%);
+  margin: 0 auto 2rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+/* Promotion chooser: over the board, because that is where the pawn is. */
+
+.board-wrap {
+  position: relative;
+}
+
+.promotion {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgb(0 0 0 / 60%);
+  z-index: 2;
+}
+
+.promotion button {
+  width: 12.5%;
+  aspect-ratio: 1;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+/* Same specificity as chessground's `.cg-wrap piece`, and later in the sheet,
+   which is what lets these sit in a row instead of stacked at the top left. */
+.promotion piece {
+  position: static;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  pointer-events: none;
+}

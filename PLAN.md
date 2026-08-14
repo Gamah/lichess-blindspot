@@ -2,21 +2,12 @@
 
 | Rank | Item |
 | ---: | --- |
-| 95 | Fetch pipeline: `GET /api/games/user/{u}?max=20&moves=true&evals=true&division=true&clocks=false` as NDJSON, streamed, into IndexedDB `games`. Handle 404 (no such user) and 429. |
-| 92 | Candidate finder: port `evalSwings` from lila `ui/analyse/src/nodeFinder.ts` + `winningChances.ts`. Pure function over (moves, evals, pov) → candidate plies. Node-testable, no DOM. |
-| 90 | Stockfish worker: `@lichess-org/stockfish-web`, two-pass — shallow sweep (~depth 12) over all plies to find swings, deep re-check (~1s) on candidates only. Emits the same eval shape as the lichess export so both paths feed one finder. |
-| 88 | COOP/COEP: `public/_headers` + Cloudflare Pages, verified with `crossOriginIsolated === true`. Nothing multithreaded works without it. |
-| 86 | Deploy to GitHub Pages, alongside the repo. Pages cannot set response headers, so COOP/COEP has to come from a service worker that re-serves the page with them (the coi-serviceworker approach): first visit registers the worker and reloads once, and `crossOriginIsolated` is only true from the second load on. Verify the multithreaded engine actually starts under it, and that cross-origin `fetch` to lichess and the masters explorer still works under `require-corp` (both send CORS headers, so they should). Keep `public/_headers` so a Cloudflare Pages deploy stays a one-line switch if the worker proves flaky. |
-| 85 | Deck build: candidate → puzzle record {id, gameId, ply, fen, pov, played, best, pv, prevEval, eval}. Shuffle across games, never two from the same game consecutively. |
-| 84 | Load gate: block on a progress bar until ~5 games are analysed, then unlock the board and keep analysing in the background. |
-| 82 | Solve loop: chessground board, player POV, retro state machine ported from `retroCtrl.ts` — accept the engine line, accept a mate, reject the move actually played, otherwise judge with local ceval at `povDiff > -0.04`. |
-| 80 | Strip context: no game link, opponent, date, ply, eval bar or move list until after the position is solved. Then reveal the game. |
-| 75 | Persistence: `idb-keyval` store per username, `navigator.storage.persist()` on first solve. Solved puzzles leave the shuffle, stay in the store. |
-| 72 | Deck pressure: when unsolved count drops below a threshold, fetch the next batch of 20 and analyse in the background. |
-| 68 | Profile switching: username input remembers recent names, each with its own store. |
-| 60 | Storage panel: `navigator.storage.estimate()` usage/quota, purge controls, "bring back solved" control. |
-| 55 | Auto-purge policy: evict raw game payloads oldest-first past a usage threshold; never evict derived puzzles or solve history. |
-| 40 | Opening-book cancellation: drop candidates whose played move appears in the masters explorer (`https://explorer.lichess.ovh/masters`), as retro does, gated on `division.middle`. |
+| 95 | Verify the app in a browser. The engine and the analysis pass have been run for real on node (`npm run engine-smoke`, `npm run verify-analysis`), but no page has been loaded: the service worker, chessground, the board's promotion chooser, IndexedDB and the load gate have all only been type-checked. |
+| 90 | Deploy to GitHub Pages and check the deployed thing, not the dev server. `.github/workflows/pages.yml` builds with `BASE=/<repo>/`; confirm the service worker registers at that scope, that the one-reload dance happens once and not on every visit, and that cross-origin `fetch` to lichess and to `lichess1.org` still works under `require-corp`. |
+| 85 | The masters explorer 401s from this host, so opening-book cancellation has never run against the real service. From a browser, check that a book move really is cancelled and that `OpeningBook` isn't making a request per middlegame puzzle. If the 401 turns out to be real rather than an IP block, the whole path degrades to "skip the opening" and should be deleted rather than left looking live. |
+| 80 | Tune the analysis budget against a real machine. Measured here at 4 threads: ~10 s for a 45-move game, 15–20 s for a 144-move one, and the load gate makes someone wait for five games of that. The sweep is cheap (~0.1 s a position); the 1 s deep re-checks are the cost. |
+| 70 | The loading screen rewrites its whole DOM on every progress event, which is once per swept position. Fine until it isn't; measure before caring. |
+| 55 | Deck exhaustion is a dead end: "that is the deck" appears, a batch is fetched, and nothing re-renders when it arrives. It should pick the next position up by itself. |
 | 30 | Stretch: spaced repetition — resurface solved positions on an SM-2-lite schedule instead of one-shot. |
 | 25 | Stretch: pad the deck with positions the player got *right*, so the deck stops signalling "there is a mistake here" and trains detection. |
 | 20 | Stretch: mirror/recolour repeat showings to defeat memorisation. |

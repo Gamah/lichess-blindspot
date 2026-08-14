@@ -1,5 +1,7 @@
 # Blindspot
 
+**<https://gamah.github.io/lichess-blindspot/>**
+
 Puzzles from your own games, for board vision.
 
 Lichess' *Learn from your mistakes* walks you through the blunders of one game,
@@ -30,8 +32,22 @@ Requires node 22+.
 
 ```
 npm install
-npm run dev
+npm run dev      # copies the engine into public/, then serves with COOP/COEP
+npm test         # the pure logic: finder, deck, solve machine, protocol
 ```
+
+Two scripts run the real engine outside a browser, which is where most of this
+gets verified:
+
+```
+npm run engine-smoke              # handshake, score normalisation, mate scores
+npm run verify-analysis [gameId]  # our candidates vs lichess' own, on a real game
+```
+
+Deploys to GitHub Pages on a push to `master`. Pages cannot set response
+headers, so cross-origin isolation comes from a service worker that re-serves
+the page with them — which means the first load of a visit is not isolated and
+the page reloads itself once.
 
 ## License
 

@@ -3,3 +3,4 @@ dist/
 .plan-state.md
 *.log
 .DS_Store
+public/engine/

@@ -29,8 +29,14 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - `POST /:id/request-analysis` is `AuthOrScoped(_.Web.Mobile)` — the official app
   only. **We can never queue server analysis.** That is why the engine runs here.
 - `division=true` gives `{middle, end}` plies, used to skip opening-book moves.
-- Masters explorer is `https://explorer.lichess.ovh/masters?fen=...`, CORS-open,
-  no auth.
+- Masters explorer is `https://explorer.lichess.ovh/masters?fen=...`, CORS-open.
+  **It answers `401` to every request from this host** (checked 2026-08-14, with
+  and without `source=analysis`, no `WWW-Authenticate` in the reply) — an nginx
+  401 that looks like IP-level blocking of a datacenter address rather than a
+  new auth requirement, since lila's own analysis board calls the same URL from
+  browsers. So the explorer path **cannot be verified here**, and
+  `OpeningBook.contains` treats "no answer" as "book", which degrades to the
+  blanket skip-the-opening behaviour rather than to blunder-shaped noise.
 - A request with **no User-Agent gets 404**, not 403 — lila's `NoCrawlers`
   guard. Browsers always send one, so this only ever bites dev scripts and
   curl, but the status code makes it look like the user doesn't exist.
@@ -59,6 +65,58 @@ The games-export endpoint could not be reached from this host (permanently
 `429`), but the single-game export works, so use that to sample:
 `curl -s https://lichess.org/api/puzzle/daily` for an id of an analysed game,
 then `GET /game/export/{id}?evals=true&division=true`.
+
+## The engine
+
+`@lichess-org/stockfish-web`, the **`sf_18_smallnet`** build, booted the way
+lila boots it (`ui/lib/src/ceval/engines/stockfishWebEngine.ts`, read
+2026-08-14): `wasmMemory: sharedWasmMemory(1536)`, `locateFile`, and
+`mainScriptUrlOrBlob` all have to be passed, and the net arrives via
+`setNnueBuffer`, not over the wire by the engine itself.
+
+- Net sizes, measured 2026-08-14: smallnet `nn-4ca89e4b3abf` **15 MB**, the
+  `sf_18` big net **109 MB**, its small companion 3.5 MB. The big one is not a
+  trade a first visit can make, which is what picks the build.
+- `https://lichess1.org/assets/lifat/nnue/<name>` serves them with
+  `access-control-allow-origin: *` and `cross-origin-resource-policy:
+  cross-origin`, so it is fetchable under our own `require-corp`. [SOURCE] —
+  headers, not a documented contract; if it ever breaks, host the net
+  ourselves. `tests.stockfishchess.org` has neither header and is not usable
+  from the browser.
+- Ask `getRecommendedNnue(i)` for the filenames rather than hardcoding one; it
+  is what survives an engine bump.
+- **The engine .js cannot be bundled.** It spawns its pthreads by re-importing
+  its own URL and finds its `.wasm` next to it, so `scripts/prepare-engine.mjs`
+  copies both into `public/engine/` (gitignored) and we dynamic-import the URL
+  with `/* @vite-ignore */`.
+- UCI scores are from the side to move; `parseInfo` normalises to White's POV
+  at the boundary so nothing downstream has to think about it.
+
+**The engine also runs on node here, and that is the only way any of this gets
+verified off a browser.** `UciSession` is transport-agnostic on purpose, so
+`npm run engine-smoke` and `npm run verify-analysis` drive the real browser code
+against the real engine. Keep it that way: put engine logic in `UciSession`, not
+in the `Engine` wrapper, or it becomes unverifiable on this host.
+
+Verified 2026-08-14 with `npm run verify-analysis`, against games lichess had
+analysed, sweep depth 12 / deep 1000 ms / 4 threads:
+
+- 45-move game: **~10 s per side**, and our candidate set was identical to the
+  one lichess' own analysis produces, 3 of 3 on both sides.
+- 144-move game: 15–20 s per side; 5 of lichess' 8 white candidates and 3 of its
+  4 black ones, plus two it didn't flag. Disagreement at the edges is expected —
+  lichess searches deeper — but the middle of the distribution matches.
+- The sweep is not the expensive half: ~0.1 s a position. The deep re-checks
+  are, at 2 s a candidate.
+
+## Node's type stripping
+
+Tests run under `node --test --experimental-strip-types`, which is **strip-only**:
+no TypeScript that needs emit. In practice that means **no constructor parameter
+properties** (`constructor(private readonly x: T) {}`) anywhere `src/` can be
+reached from a test, and no enums or namespaces. Assign in the body instead. The
+type checker will not warn you; the test run fails with
+`ERR_INVALID_TYPESCRIPT_SYNTAX`.
 
 ## Ported code
 
@@ -101,6 +159,15 @@ tolerate one reload; do not assert isolation at startup.
 `public/_headers` and the vite dev-server headers stay regardless: they make
 dev match the isolated case, and they make a move to Cloudflare Pages a one-line
 switch if the worker proves flaky.
+
+`public/coi-serviceworker.js` deliberately touches **same-origin responses
+only**. Cross-origin ones — the lichess API, the neural net — already carry the
+CORS and CORP headers `require-corp` wants, and re-wrapping an opaque response
+in the worker breaks them.
+
+The Pages build needs `BASE=/<repo>/` (the workflow passes it): the engine and
+the service worker are loaded by URL rather than by import, so a wrong base
+404s them at runtime instead of failing the build.
 
 ## Licence
 
