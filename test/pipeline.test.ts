@@ -2,23 +2,29 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Pipeline, type Store } from '../src/app/pipeline.ts';
+import type { Puzzle } from '../src/deck/build.ts';
+import { replay } from '../src/deck/positions.ts';
 import type { Analyser } from '../src/engine/analyse.ts';
+import type { EngineLine, Request } from '../src/engine/protocol.ts';
+import type { ExportedGame } from '../src/lichess/export.ts';
 import type { Meta } from '../src/storage/db.ts';
 
 // lichess allows one games export per IP at a time, so the thing under test is
 // how often this asks — not what it does with the answers.
 
-const fakeStore = (): Store => {
+const fakeStore = (): Store & { stored: ExportedGame[] } => {
   let meta: Meta = { analysed: [], fetched: [] };
+  const stored: ExportedGame[] = [];
   return {
+    stored,
     username: 'someone',
     meta: async () => meta,
     setMeta: async next => {
       meta = next;
     },
-    putGame: async () => {},
-    putPuzzles: async () => {},
-    purgeGames: async () => 0,
+    putGame: async game => {
+      stored.push(game);
+    },
   };
 };
 
@@ -27,11 +33,13 @@ const noEngine = (): Promise<Analyser> => Promise.reject(new Error('no engine in
 const events = () => {
   const errors: Error[] = [];
   const retries: number[] = [];
+  const puzzles: Puzzle[] = [];
   return {
     errors,
     retries,
+    puzzles,
     handlers: {
-      onPuzzles: () => {},
+      onPuzzles: (p: Puzzle[]) => puzzles.push(...p),
       onProgress: () => {},
       onError: (e: Error) => errors.push(e),
       onRetry: (_e: Error, ms: number) => retries.push(ms),
@@ -158,6 +166,55 @@ test('each batch reaches further back, so the deck is not capped at 20 games', a
   } finally {
     fetch.restore();
   }
+});
+
+// The expensive thing is the eval array, and it is the only thing kept: the
+// puzzles handed to the deck are derived from the game and never written.
+test('what the engine works out is written back onto the game', async () => {
+  const moves = 'e4 e5 Nf3 Nc6 Ng5 Nf6 Nxf7 Kxf7';
+  const steps = replay(moves.split(' '));
+  /** cp after each ply, white POV: white hangs the knight on move 5. */
+  const after = [20, 15, 25, 20, -300, -310, -320, -330];
+  const engine: Analyser = {
+    analyse: (req: Request): Promise<EngineLine> => {
+      // Keyed by position rather than by ply, the way a real engine answers:
+      // pass 2 asks about positions pass 1 has already scored.
+      const i = steps.findIndex(s => s.after === req.fen);
+      return Promise.resolve({
+        depth: 12,
+        score: { cp: i === -1 ? 20 : after[i]! },
+        pv: req.fen === steps[4]!.fen ? ['f1c4', 'f8c5'] : ['e1e2'],
+      });
+    },
+  };
+  const fetch = stubFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          id: 'aaa',
+          createdAt: 1000,
+          variant: 'standard',
+          players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+          moves,
+        }),
+      ),
+  );
+  const store = fakeStore();
+  const { puzzles, handlers } = events();
+  try {
+    await new Pipeline(store, () => Promise.resolve(engine), handlers, () => 7_000_000).run();
+  } finally {
+    fetch.restore();
+  }
+
+  const stored = store.stored.at(-1)!;
+  assert.equal(stored.id, 'aaa');
+  assert.equal(stored.analysis?.length, 8, 'one entry per ply, like the export');
+  assert.equal(stored.analysis![4]!.best, 'f1c4');
+  assert.deepEqual(
+    puzzles.map(p => p.id),
+    ['aaa:5'],
+  );
 });
 
 test('running out of games stops the asking for good', async () => {

@@ -17,8 +17,9 @@ export interface Puzzle {
   /**
    * One ply earlier: the position before the opponent's last move, and that
    * move. Played out on the board first, the way a lichess puzzle opens, so a
-   * position arrives with a moment of context instead of cold. Absent on
-   * puzzles built before this existed.
+   * position arrives with a moment of context instead of cold. Optional only
+   * for the puzzle records older versions persisted, which may predate it;
+   * anything derived here has one.
    */
   intro?: { fen: string; uci: string; san: string };
   /** The side to move, and the side whose blindspot this is. */

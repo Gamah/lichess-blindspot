@@ -43,8 +43,13 @@ export class Deck {
     return this.served;
   }
 
-  /** Put one back, unsolved — for "skip", which is not "solved". */
+  /**
+   * Put one back, unsolved — for "skip", which is not "solved". Ignores a
+   * puzzle that is already waiting: the deck can be rebuilt from storage while
+   * one is on screen, and that copy would otherwise be skipped into a duplicate.
+   */
   requeue(puzzle: Puzzle): void {
+    if (this.pending.some(p => p.id === puzzle.id) || this.solved.has(puzzle.id)) return;
     this.pending.push(puzzle);
   }
 

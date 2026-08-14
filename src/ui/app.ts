@@ -8,7 +8,7 @@
 import { Deck } from '../app/deck.ts';
 import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
-import { replay } from '../deck/positions.ts';
+import { puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
@@ -118,8 +118,8 @@ export class App {
           <li>
             <h2>The moments it fell apart</h2>
             <p>Every move where your position dropped sharply becomes a puzzle, using the same
-              rule lichess itself uses. Opening moves the masters play are dropped rather than
-              held against you.</p>
+              rule lichess itself uses. The opening is left out of it rather than held against
+              you.</p>
           </li>
           <li>
             <h2>Judged on merit, not on one answer</h2>
@@ -265,7 +265,9 @@ export class App {
         <select id="max-per-game">${options}</select>
         <p class="hint">Finding mistakes is cheap; confirming one costs a pair of second-long
           searches. Fewer per game means games are analysed faster and the deck draws from a
-          wider spread of them. Applies to games analysed from now on.</p>
+          wider spread of them. Changing it rebuilds the deck from the games already analysed —
+          though raising it only finds more in games lichess analysed for us, since our own pass
+          stops searching once it has enough.</p>
       </div>
 
       <div class="setting">
@@ -283,8 +285,9 @@ export class App {
           estimate
             ? `Using ${mb(estimate.usage)} of ${mb(estimate.quota)} available. `
             : 'This browser will not say how much space it is using. '
-        }Games can always be fetched from lichess again, so they are the only thing ever
-          discarded — automatically, once the quota gets tight.</p>
+        }A stored game carries the analysis of it, and the positions you solve are built from
+          that, so deleting games deletes their positions too. Nothing is ever discarded on its
+          own; your solve history survives either way.</p>
       </div>
 
       <div class="setting">
@@ -297,7 +300,7 @@ export class App {
       <div class="setting">
         <span class="label-text">This profile</span>
         <button id="wipe" class="quiet danger">Delete ${escape(this.profile.username)}</button>
-        <p class="hint">Games, puzzles and solve history for this username, gone. The engine's
+        <p class="hint">Games, their analysis and your solve history for this username, gone. The engine's
           neural net is shared and stays.</p>
       </div>
 
@@ -308,13 +311,19 @@ export class App {
       if (el) el.textContent = text;
     };
     (panel.querySelector('#close') as HTMLButtonElement).onclick = () => (panel.hidden = true);
-    (panel.querySelector('#max-per-game') as HTMLSelectElement).onchange = e => {
+    (panel.querySelector('#max-per-game') as HTMLSelectElement).onchange = async e => {
       const value = Number((e.target as HTMLSelectElement).value);
       saveSettings({ maxPerGame: value });
+      // Retroactive, because a puzzle is a view over a stored game rather than
+      // a record: the cap can simply be applied again to everything.
+      await this.buildDeck();
+      this.renderCounters();
       status(
-        value === 0
-          ? 'Taking every mistake it finds from each game.'
-          : `Taking up to ${value} position${value === 1 ? '' : 's'} from each game analysed from now on.`,
+        `${
+          value === 0
+            ? 'Taking every mistake it finds from each game'
+            : `Taking up to ${value} position${value === 1 ? '' : 's'} from each game`
+        }. Deck rebuilt: ${this.deck.unsolvedCount()} waiting.`,
       );
     };
     (panel.querySelector('#threads') as HTMLSelectElement).onchange = e => {
@@ -327,11 +336,18 @@ export class App {
     };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
       const dropped = await this.profile?.purgeGames();
-      status(`${dropped ?? 0} game payload${dropped === 1 ? '' : 's'} dropped.`);
+      await this.buildDeck();
+      this.renderCounters();
+      status(
+        `${dropped ?? 0} game${dropped === 1 ? '' : 's'} deleted, and the positions from them. ` +
+          `${this.deck.unsolvedCount()} waiting.`,
+      );
     };
     (panel.querySelector('#unsolve') as HTMLButtonElement).onclick = async () => {
       await this.profile?.clearSolves();
-      status('Solve history cleared. Reload to shuffle the solved positions back in.');
+      await this.buildDeck();
+      this.renderCounters();
+      status(`Solve history cleared. ${this.deck.unsolvedCount()} positions back in the deck.`);
     };
     (panel.querySelector('#wipe') as HTMLButtonElement).onclick = async () => {
       await this.profile?.wipe();
@@ -350,9 +366,7 @@ export class App {
     this.profile = profile;
     this.renderLoading();
 
-    const [puzzles, solves] = await Promise.all([profile.puzzles(), profile.solves()]);
-    this.deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
-    this.deck.add(puzzles);
+    await this.buildDeck();
 
     this.pipeline = new Pipeline(profile, () => this.engine(), {
       onPuzzles: p => {
@@ -379,6 +393,35 @@ export class App {
     this.maybeUnlock();
   }
 
+  /**
+   * Build the deck out of what is stored. Nothing persists a puzzle any more:
+   * the games hold their eval arrays and the positions are derived from those
+   * here, every time. Which is also why this can simply be run again when
+   * something that shapes the deck — how many positions a game may contribute
+   * — changes.
+   */
+  private async buildDeck(): Promise<void> {
+    const profile = this.profile;
+    if (!profile) return;
+    const [games, legacy, solves] = await Promise.all([
+      profile.games(),
+      profile.legacyPuzzles(),
+      profile.solves(),
+    ]);
+    // Switch player is one click and three IndexedDB reads are not instant.
+    if (this.profile !== profile) return;
+    const deck = new Deck();
+    deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
+    const maxPerGame = settings().maxPerGame;
+    // One add, not one per game: `add` reshuffles what is left each time, and
+    // the shuffle is what keeps two positions from one game apart.
+    deck.add(games.flatMap(game => puzzlesFromGame(game, profile.username, { maxPerGame })));
+    // Decks written before the change, whose game may since have been purged.
+    // `Deck.add` keys on `gameId:ply`, so anything derived above wins.
+    deck.add(legacy);
+    this.deck = deck;
+  }
+
   /** The load gate: a progress bar until there is enough to solve. */
   private maybeUnlock(pipelineDone = false): void {
     if (this.unlocked) {
@@ -397,8 +440,7 @@ export class App {
   }
 
   private async nextPuzzle(): Promise<void> {
-    const drawn = this.deck.next();
-    const puzzle = drawn ? await this.withIntro(drawn) : undefined;
+    const puzzle = this.deck.next();
     if (puzzle) {
       this.awaitingPuzzles = false;
       clearTimeout(this.exhaustedTimer);
@@ -424,32 +466,6 @@ export class App {
       `<strong>${puzzle.pov === 'white' ? 'White' : 'Black'} to play.</strong>
        <span>Find the move. There is a better one than the one that was played.</span>`,
     );
-  }
-
-  /**
-   * Puzzles built before the opening animation existed have no intro. The raw
-   * game is usually still here, so replay it and fill one in rather than
-   * having half a deck open cold. Best effort: game payloads are purgeable.
-   */
-  private async withIntro(puzzle: Puzzle): Promise<Puzzle> {
-    if (puzzle.intro || !this.profile) return puzzle;
-    try {
-      const game = await this.profile.game(puzzle.gameId);
-      if (!game?.moves) return puzzle;
-      const steps = replay(game.moves.split(' ').filter(Boolean), game.initialFen);
-      const before = steps[puzzle.ply - 2];
-      // The move has to land exactly on the position being solved, or the
-      // game and the puzzle disagree and the animation would be a lie.
-      if (!before || before.after !== puzzle.fen) return puzzle;
-      const filled: Puzzle = {
-        ...puzzle,
-        intro: { fen: before.fen, uci: before.uci, san: before.san },
-      };
-      await this.profile.putPuzzles([filled]);
-      return filled;
-    } catch {
-      return puzzle;
-    }
   }
 
   private async onMove(move: PlayedMove): Promise<void> {

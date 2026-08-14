@@ -4,17 +4,21 @@
 // the ones a human is waiting on, so the pipeline yields: `pause()` stops it
 // between positions, which is at most one search away.
 
-import { findCandidates } from '../analysis/candidates.ts';
-import { buildPuzzles, type Puzzle } from '../deck/build.ts';
-import { replay, type ReplayStep } from '../deck/positions.ts';
+import type { Puzzle } from '../deck/build.ts';
+import { prepareGame, puzzlesFromGame } from '../deck/derive.ts';
+import type { ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
-import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
-import { purgeIfTight, type Meta, type Profile } from '../storage/db.ts';
+import { ExportError, fetchGames, type ExportedGame } from '../lichess/export.ts';
+import type { Meta, Profile } from '../storage/db.ts';
 import { settings } from '../storage/prefs.ts';
 
 export interface PipelineEvents {
-  /** New puzzles, already stored. */
+  /**
+   * Positions derived from a game that has just been analysed. Nothing stores
+   * these — the analysis they came from is on the stored game, and the same
+   * call rebuilds them next session.
+   */
   onPuzzles: (puzzles: Puzzle[]) => void;
   /** Games finished this session, and the game being worked on right now. */
   onProgress: (p: Progress) => void;
@@ -50,10 +54,7 @@ const BACKOFF = 120_000;
 const RETRY_DELAY = 8_000;
 
 /** Just the storage this needs, so tests can hand it something that isn't IndexedDB. */
-export type Store = Pick<
-  Profile,
-  'username' | 'meta' | 'setMeta' | 'putGame' | 'putPuzzles' | 'purgeGames'
->;
+export type Store = Pick<Profile, 'username' | 'meta' | 'setMeta' | 'putGame'>;
 
 export class Pipeline {
   private queue: ExportedGame[] = [];
@@ -108,9 +109,6 @@ export class Pipeline {
       this.lastExportAt = this.now();
       await this.fetchWithRetry();
       await this.drain();
-      // Between batches, not during: purging mid-analysis would drop a payload
-      // the queue still holds a reference to.
-      await purgeIfTight(this.profile as Profile);
     } catch (e) {
       if (e instanceof Aborted) return;
       // Past the retry, a 429 means back off rather than let the next caller
@@ -231,10 +229,7 @@ export class Pipeline {
       this.emit({ gamesPending: this.queue.length, current: 0 });
       try {
         const puzzles = await this.analyse(game);
-        if (puzzles.length) {
-          await this.profile.putPuzzles(puzzles);
-          this.events.onPuzzles(puzzles);
-        }
+        if (puzzles.length) this.events.onPuzzles(puzzles);
         await this.markDone(game.id, puzzles.length > 0);
       } catch (e) {
         if (e instanceof Aborted) throw e;
@@ -253,43 +248,32 @@ export class Pipeline {
     });
   }
 
+  /**
+   * Make sure the game has an eval array, paying the engine for one if lichess
+   * did not, and store it on the game. The puzzles are then only a view over
+   * it — see deck/derive.ts — so nothing but the game is written.
+   */
   private async analyse(game: ExportedGame): Promise<Puzzle[]> {
-    const pov = povOf(game, this.profile.username);
-    // Someone else's game (a username that changed case is handled by povOf),
-    // or a variant our replay can't play out.
-    if (!pov || (game.variant !== 'standard' && game.variant !== 'fromPosition')) return [];
-    const moves = game.moves?.split(' ').filter(Boolean) ?? [];
-    if (moves.length < 4) return [];
-    const steps = replay(moves, game.initialFen);
-
-    // The opening is cut off by ply. This used to ask the masters explorer
-    // instead — drop a move because masters play it, not because it is early —
-    // which is what retro does, but the explorer answers 401 to anyone without
-    // a lichess session and there is no way for a static page to have one. It
-    // failed closed, so every early candidate was dropped anyway: identical
-    // behaviour, one wasted request per position, and a code path that looked
-    // alive. See PLAN.
-    const fromPly = game.division?.middle;
-
-    // Games lichess has already analysed ship their evals in the export, and
-    // cost us nothing.
     // Read per game rather than per session, so changing the setting takes
-    // effect on the next game instead of the next reload.
+    // effect on the next game rather than the next reload.
     const maxPerGame = settings().maxPerGame;
-    const analysis = game.analysis?.length
-      ? game.analysis
-      : await this.engineAnalysis(steps, pov, fromPly, maxPerGame);
 
-    const kept = findCandidates(moves, analysis, {
-      pov,
-      ...(fromPly !== undefined ? { fromPly } : {}),
-    });
+    // Games lichess has already analysed ship their evals in the export and
+    // cost us nothing.
+    if (!game.analysis?.length) {
+      const prepared = prepareGame(game, this.profile.username);
+      if (!prepared) return [];
+      game.analysis = await this.engineAnalysis(
+        prepared.steps,
+        prepared.pov,
+        prepared.fromPly,
+        maxPerGame,
+      );
+      // The expensive half of the session lives in this write.
+      await this.profile.putGame(game);
+    }
 
-    // The engine path already stopped early; a game lichess analysed for us
-    // costs nothing to find but is capped too, so a deck looks the same either
-    // way.
-    const chosen = maxPerGame > 0 ? kept.slice(0, maxPerGame) : kept;
-    return buildPuzzles(game.id, steps, chosen, pov, Date.now());
+    return puzzlesFromGame(game, this.profile.username, { maxPerGame, now: Date.now() });
   }
 
   private async engineAnalysis(

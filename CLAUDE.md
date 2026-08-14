@@ -202,14 +202,34 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 
 ## Storage
 
-- IndexedDB via `idb-keyval` for games, deck and solve history. One store per
-  username.
+- IndexedDB via `idb-keyval`, one store per username, and only two kinds of
+  record: `game:<id>` and `solve:<gameId>:<ply>`.
 - localStorage only for tiny prefs (last username, board theme). It is a
   separate, fixed ~5 MiB box, not a slice of the IndexedDB quota.
 - Call `navigator.storage.persist()` once, or the browser LRU-evicts solve
   history under disk pressure.
-- Raw game payloads are re-fetchable and may be purged. Derived puzzles and
-  solve history are not and must not be.
+
+**Puzzles are not stored.** They are a view over a stored game, rebuilt by
+`puzzlesFromGame` (`src/deck/derive.ts`) every time the deck is built — on
+load, and again whenever something that shapes the deck changes. So:
+
+- The durable artefact is the game's **`analysis` field**: lichess' evals if it
+  analysed the game, ours written into the same field if it didn't. That is
+  where the engine time lives. A stored game is therefore **not** re-fetchable
+  and nothing purges it automatically; `purgeGames` is the Settings button and
+  its copy says the positions go with it.
+- Changing "positions per game" is retroactive, because the cap is applied on
+  derivation. Raising it only finds more in games lichess analysed, though:
+  `analyseGame`'s `maxCandidates` stops our own pass searching, so the evidence
+  for the extra candidates was never gathered.
+- Puzzle identity stays `gameId:ply` whatever a puzzle contains, which is why
+  `solve:` records survive any change to its shape. Keep it that way.
+- `Profile.legacyPuzzles()` reads `puzzle:` keys written by the versions that
+  persisted puzzle records. Read-only, additive to the derived deck, and
+  deletable once no profile has any left.
+- The reason this exists: every change to what a puzzle holds used to need a
+  migration (`App.withIntro` backfilled the opening animation onto old
+  records). Don't reintroduce a stored puzzle to save a derivation.
 
 ## Cross-origin isolation
 

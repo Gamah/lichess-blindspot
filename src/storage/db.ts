@@ -1,12 +1,20 @@
 // One IndexedDB database per username, so switching profiles can never mix two
 // people's decks and deleting one is a single line.
 //
-// What lives where matters: raw game payloads are re-fetchable from lichess and
-// may be purged under pressure; puzzles and solve history are derived from
-// analysis we paid for in engine time, and are not re-derivable cheaply. Only
-// the first is ever evicted. See CLAUDE.md.
+// Two things are stored, and the split is deliberate:
+//
+//   game:<id>   the game, carrying its eval array — lichess' if it analysed the
+//               game, ours written back into the same field if we did. This is
+//               the expensive artefact and the only durable one.
+//   solve:<id>  what has been solved, keyed by `gameId:ply`, which is stable
+//               whatever a puzzle happens to contain this week.
+//
+// Puzzles are not stored at all: they are derived from a game whenever they are
+// wanted (see deck/derive.ts). So a game with our analysis in it is no longer
+// "re-fetchable" and is never evicted automatically — deleting it deletes the
+// engine time that produced it, and the positions with it. See CLAUDE.md.
 
-import { clear, createStore, del, delMany, entries, get, set, setMany, type UseStore } from 'idb-keyval';
+import { clear, createStore, del, delMany, entries, get, set, type UseStore } from 'idb-keyval';
 
 import type { Puzzle } from '../deck/build.ts';
 import type { ExportedGame } from '../lichess/export.ts';
@@ -86,17 +94,19 @@ export class Profile {
   putGame = (game: ExportedGame): Promise<void> =>
     this.use(store => set(GAME + game.id, game, store), undefined);
 
-  putPuzzles = (puzzles: readonly Puzzle[]): Promise<void> =>
-    this.use(
-      store =>
-        setMany(
-          puzzles.map(p => [PUZZLE + p.id, p] as [string, Puzzle]),
-          store,
-        ),
-      undefined,
-    );
+  /** Every stored game, newest first. The deck is derived from these. */
+  games = (): Promise<ExportedGame[]> =>
+    this.use(async store => {
+      const all = await valuesWithPrefix<ExportedGame>(store, GAME);
+      return all.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+    }, []);
 
-  puzzles = (): Promise<Puzzle[]> => this.use(store => valuesWithPrefix<Puzzle>(store, PUZZLE), []);
+  /**
+   * Puzzles written by the versions that persisted them, before a puzzle became
+   * a view over its game. Read so nobody loses a deck to the change; nothing
+   * writes these any more, and they can go once no profile has any left.
+   */
+  legacyPuzzles = (): Promise<Puzzle[]> => this.use(store => valuesWithPrefix<Puzzle>(store, PUZZLE), []);
 
   solves = (): Promise<SolveRecord[]> => this.use(store => valuesWithPrefix<SolveRecord>(store, SOLVE), []);
 
@@ -110,7 +120,11 @@ export class Profile {
       await delMany(keys, store);
     }, undefined);
 
-  /** Raw payloads only. Oldest first, and never the puzzles built from them. */
+  /**
+   * Drop stored games, newest `keep` kept — and with them their analysis and
+   * every position derived from it. Manual only: nothing here is cheap enough
+   * to throw away on our own initiative any more.
+   */
   purgeGames = (keep = 0): Promise<number> =>
     this.use(async store => {
       const games = (await entries<string, unknown>(store))
@@ -151,18 +165,6 @@ export async function requestPersistence(): Promise<boolean> {
 export interface StorageEstimate {
   usage: number;
   quota: number;
-}
-
-/**
- * Raw game payloads are the only thing here worth evicting: lichess will hand
- * them back. Runs after a batch, so a long session doesn't quietly fill the
- * quota and get the whole database dropped instead.
- */
-export async function purgeIfTight(profile: Profile, threshold = 0.8, keep = 20): Promise<number> {
-  const estimate = await storageEstimate();
-  if (!estimate || !estimate.quota) return 0;
-  if (estimate.usage / estimate.quota < threshold) return 0;
-  return profile.purgeGames(keep);
 }
 
 export async function storageEstimate(): Promise<StorageEstimate | undefined> {
