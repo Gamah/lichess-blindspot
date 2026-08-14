@@ -72,7 +72,10 @@ export class App {
     this.root.innerHTML = `
       <main class="landing">
         <h1>Blindspot</h1>
-        <p class="tagline">Puzzles from your own games. No account, nothing stored anywhere but here.</p>
+        <p class="tagline">Puzzles from your own games, built entirely inside this browser tab.</p>
+        <p class="hint">There is no server and no account. Your games are fetched straight from
+          lichess, the chess engine runs here in this tab, and everything it works out is kept in
+          this browser and sent nowhere. Clear the site data and it is gone.</p>
         <form class="start">
           <input name="username" list="recent" placeholder="lichess username" autocomplete="off"
                  autocapitalize="off" spellcheck="false" value="${escape(preset)}" required>
