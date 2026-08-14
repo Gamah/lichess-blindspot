@@ -26,12 +26,6 @@ export interface Puzzle {
   prevEval: EvalScore;
   eval: EvalScore;
   judgment?: string;
-  /**
-   * Moves masters have played from this position, when it is early enough for
-   * the question to mean anything. Any of them counts as a right answer, the
-   * way retro accepts them.
-   */
-  openingUcis?: string[];
   createdAt: number;
 }
 

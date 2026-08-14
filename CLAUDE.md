@@ -29,14 +29,16 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - `POST /:id/request-analysis` is `AuthOrScoped(_.Web.Mobile)` — the official app
   only. **We can never queue server analysis.** That is why the engine runs here.
 - `division=true` gives `{middle, end}` plies, used to skip opening-book moves.
-- Masters explorer is `https://explorer.lichess.ovh/masters?fen=...`, CORS-open.
-  **It answers `401` to every request from this host** (checked 2026-08-14, with
-  and without `source=analysis`, no `WWW-Authenticate` in the reply) — an nginx
-  401 that looks like IP-level blocking of a datacenter address rather than a
-  new auth requirement, since lila's own analysis board calls the same URL from
-  browsers. So the explorer path **cannot be verified here**, and
-  `OpeningBook.contains` treats "no answer" as "book", which degrades to the
-  blanket skip-the-opening behaviour rather than to blunder-shaped noise.
+- **The masters explorer is not available to us.**
+  `https://explorer.lichess.ovh/masters` is CORS-open but answers `401` to
+  everything: from this host by curl, and from a browser on an ordinary
+  domestic connection (checked 2026-08-14, with and without `source=analysis`,
+  no `WWW-Authenticate` in the reply). lila's own frontend calls it with
+  `credentials: 'include'` — a lichess session cookie, which a static page on
+  another origin can never send. Treat it as lichess-only. We removed the
+  opening-book cancellation because of this and cut the opening off by
+  `division.middle` instead; do not re-add it without evidence the endpoint
+  answers an unauthenticated cross-origin request.
 - A request with **no User-Agent gets 404**, not 403 — lila's `NoCrawlers`
   guard. Browsers always send one, so this only ever bites dev scripts and
   curl, but the status code makes it look like the user doesn't exist.

@@ -48,9 +48,15 @@ export interface Settings {
    * same game anyway.
    */
   maxPerGame: number;
+  /**
+   * Engine threads, or 0 to decide from `hardwareConcurrency`. More is faster
+   * until it isn't, and on a phone it is also the difference between a warm
+   * device and an unusable one.
+   */
+  threads: number;
 }
 
-export const DEFAULT_SETTINGS: Settings = { maxPerGame: 3 };
+export const DEFAULT_SETTINGS: Settings = { maxPerGame: 3, threads: 0 };
 
 export const settings = (): Settings => ({
   ...DEFAULT_SETTINGS,

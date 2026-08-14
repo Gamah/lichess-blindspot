@@ -48,7 +48,19 @@ export class EngineUnavailable extends Error {}
 export class Engine {
   private session!: UciSession;
 
-  static async boot(onProgress: (p: BootProgress) => void = () => {}): Promise<Engine> {
+  /**
+   * How many threads to use when nobody has said. One core is left for the
+   * page, and there is a ceiling because the gain flattens long before a big
+   * machine's core count does.
+   */
+  static defaultThreads(): number {
+    return Math.max(1, Math.min((navigator.hardwareConcurrency || 2) - 1, 8));
+  }
+
+  static async boot(
+    onProgress: (p: BootProgress) => void = () => {},
+    threads = Engine.defaultThreads(),
+  ): Promise<Engine> {
     if (!crossOriginIsolated)
       throw new EngineUnavailable(
         'This page is not cross-origin isolated, so the multithreaded engine cannot start.',
@@ -86,18 +98,18 @@ export class Engine {
     engine.session = new UciSession(cmd => module.uci(cmd));
     module.listen = (line: string) => engine.session.receive(line);
 
-    await engine.session.handshake({
-      // One core left for the page itself, and a ceiling because the gain
-      // flattens long before a big machine's core count does.
-      threads: Math.max(1, Math.min(navigator.hardwareConcurrency - 1, 8)),
-      hashMb: 128,
-    });
+    await engine.session.handshake({ threads, hashMb: 128 });
     onProgress({ message: 'Engine ready' });
     return engine;
   }
 
   analyse(req: Request): Promise<EngineLine> {
     return this.session.analyse(req);
+  }
+
+  /** Applies to the next search; no restart, no re-download. */
+  setThreads(threads: number): Promise<void> {
+    return this.session.setOption('Threads', threads);
   }
 
   destroy(): void {

@@ -9,7 +9,6 @@ import { buildPuzzles, type Puzzle } from '../deck/build.ts';
 import { replay, type ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
-import { OpeningBook, type BookStats } from '../lichess/explorer.ts';
 import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
 import { purgeIfTight, type Profile } from '../storage/db.ts';
 import { settings } from '../storage/prefs.ts';
@@ -63,8 +62,6 @@ export class Pipeline {
   private wake: (() => void) | undefined;
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private abort = new AbortController();
-  private readonly book = new OpeningBook();
-  private bookCancelled = 0;
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
   private exhausted = false;
@@ -135,15 +132,6 @@ export class Pipeline {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * What the opening explorer has been doing, and how many candidates it threw
-   * away. Otherwise there is no way to tell from a browser whether the book
-   * cancellation ran at all, or silently failed open.
-   */
-  bookStats(): BookStats & { cancelled: number } {
-    return { ...this.book.stats, cancelled: this.bookCancelled };
   }
 
   /** Why the deck is not filling, for the UI to say out loud. */
@@ -254,11 +242,14 @@ export class Pipeline {
     if (moves.length < 4) return [];
     const steps = replay(moves, game.initialFen);
 
-    // The opening is not cut off by ply. It is cut off by the masters
-    // explorer, as retro does it: an early move is dropped because masters have
-    // played it, not because it is early. When the explorer can't be reached
-    // `isBook` says yes and the effect is the old blanket cut.
-    const isBook = (index: number): Promise<boolean> => this.isBook(game, steps, index);
+    // The opening is cut off by ply. This used to ask the masters explorer
+    // instead — drop a move because masters play it, not because it is early —
+    // which is what retro does, but the explorer answers 401 to anyone without
+    // a lichess session and there is no way for a static page to have one. It
+    // failed closed, so every early candidate was dropped anyway: identical
+    // behaviour, one wasted request per position, and a code path that looked
+    // alive. See PLAN.
+    const fromPly = game.division?.middle;
 
     // Games lichess has already analysed ship their evals in the export, and
     // cost us nothing.
@@ -267,42 +258,24 @@ export class Pipeline {
     const maxPerGame = settings().maxPerGame;
     const analysis = game.analysis?.length
       ? game.analysis
-      : await this.engineAnalysis(steps, pov, isBook, maxPerGame);
+      : await this.engineAnalysis(steps, pov, fromPly, maxPerGame);
 
-    const candidates = findCandidates(moves, analysis, { pov });
-    const kept: typeof candidates = [];
-    for (const c of candidates) {
-      if (await isBook(c.index)) this.bookCancelled++;
-      else kept.push(c);
-    }
+    const kept = findCandidates(moves, analysis, {
+      pov,
+      ...(fromPly !== undefined ? { fromPly } : {}),
+    });
 
     // The engine path already stopped early; a game lichess analysed for us
     // costs nothing to find but is capped too, so a deck looks the same either
     // way.
     const chosen = maxPerGame > 0 ? kept.slice(0, maxPerGame) : kept;
-    const puzzles = buildPuzzles(game.id, steps, chosen, pov, Date.now());
-    // A book alternative is a right answer, not just a cancelled mistake, so
-    // the list travels with the puzzle for the solver to accept.
-    for (const puzzle of puzzles) {
-      // Only where the question means something. A middlegame position is not
-      // in any book, and asking costs a request to find that out.
-      if (!inOpening(game, puzzle.ply)) continue;
-      const ucis = await this.book.ucis(puzzle.fen);
-      if (ucis?.length) puzzle.openingUcis = ucis;
-    }
-    return puzzles;
-  }
-
-  private async isBook(game: ExportedGame, steps: readonly ReplayStep[], index: number): Promise<boolean> {
-    if (!inOpening(game, index + 1)) return false;
-    const step = steps[index];
-    return step ? this.book.contains(step.fen, step.uci) : false;
+    return buildPuzzles(game.id, steps, chosen, pov, Date.now());
   }
 
   private async engineAnalysis(
     steps: readonly ReplayStep[],
     pov: 'white' | 'black',
-    isBook: (index: number) => Promise<boolean>,
+    fromPly: number | undefined,
     maxCandidates: number,
   ) {
     this.emit({ engineBusy: true });
@@ -310,17 +283,13 @@ export class Pipeline {
     return analyseGame(engine, steps, {
       pov,
       maxCandidates,
-      skipPly: index => isBook(index),
+      ...(fromPly !== undefined ? { fromPly } : {}),
       signal: this.abort.signal,
       beforeEach: () => this.gate(),
       onProgress: (done, total) => this.emit({ current: done / total }),
     });
   }
 }
-
-/** retroCtrl's guard: standard chess, and before the middlegame if lichess said where that is. */
-const inOpening = (game: ExportedGame, ply: number): boolean =>
-  game.variant === 'standard' && (game.division?.middle === undefined || ply < game.division.middle);
 
 /** The two 429s both mean "not now"; only the sentence we show differs. */
 const isBusy = (e: unknown): boolean =>

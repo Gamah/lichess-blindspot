@@ -118,6 +118,30 @@ export class UciSession {
     );
   }
 
+  /**
+   * Change an option on a running engine. Queued like a search, so it lands
+   * between two of them rather than in the middle of one — Stockfish ignores
+   * `setoption` while it is thinking.
+   */
+  setOption(name: string, value: string | number): Promise<void> {
+    const run = () =>
+      this.exchange<void>(
+        () => {
+          this.send(`setoption name ${name} value ${value}`);
+          this.send('isready');
+        },
+        (line, done) => {
+          if (line === 'readyok') done();
+        },
+      );
+    const result = this.queue.then(run, run);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   /** Analyse one position. Serialised: an engine is one search at a time. */
   analyse(req: Request): Promise<EngineLine> {
     const run = () => this.search(req);

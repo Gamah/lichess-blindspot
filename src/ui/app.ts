@@ -11,7 +11,6 @@ import type { Puzzle } from '../deck/build.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import type { BookStats } from '../lichess/explorer.ts';
 import { Solve } from '../solve/retro.ts';
 import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
 import { recentUsernames, rememberUsername, saveSettings, settings } from '../storage/prefs.ts';
@@ -40,6 +39,7 @@ export class App {
   private solve: Solve | undefined;
   private attempts = 0;
   private enginePromise: Promise<Analyser> | undefined;
+  private booted: Engine | undefined;
   private engineFailed: string | undefined;
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private booting: BootProgress | undefined;
@@ -264,6 +264,14 @@ export class App {
       </div>
 
       <div class="setting">
+        <label for="threads">Processor cores</label>
+        <select id="threads">${threadOptions()}</select>
+        <p class="hint">How many cores the engine may use while it analyses. More is faster;
+          fewer leaves the device usable and, on a phone, cooler. Takes effect on the next
+          position analysed — the engine is not restarted.</p>
+      </div>
+
+      <div class="setting">
         <span class="label-text">Stored games</span>
         <button id="purge" class="quiet">Purge</button>
         <p class="hint">${
@@ -288,13 +296,6 @@ export class App {
           neural net is shared and stays.</p>
       </div>
 
-      <div class="setting diagnostics">
-        <span class="label-text">Opening explorer</span>
-        <span class="value">${bookLine(this.pipeline?.bookStats())}</span>
-        <p class="hint">Opening moves the masters play are dropped rather than served as
-          mistakes. If lookups are failing, every opening candidate is being dropped instead.</p>
-      </div>
-
       <p class="line" id="panel-status"></p>`;
 
     const status = (text: string) => {
@@ -310,6 +311,14 @@ export class App {
           ? 'Taking every mistake it finds from each game.'
           : `Taking up to ${value} position${value === 1 ? '' : 's'} from each game analysed from now on.`,
       );
+    };
+    (panel.querySelector('#threads') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      saveSettings({ threads: value });
+      const using = value || Engine.defaultThreads();
+      // Live, if an engine is already running; otherwise it boots with this.
+      void this.booted?.setThreads(using).catch(() => {});
+      status(`Using ${using} core${using === 1 ? '' : 's'}.`);
     };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
       const dropped = await this.profile?.purgeGames();
@@ -393,7 +402,7 @@ export class App {
       void this.refill();
       return;
     }
-    this.solve = new Solve(puzzle, puzzle.openingUcis ?? []);
+    this.solve = new Solve(puzzle);
     this.attempts = 0;
     this.board?.set(puzzle.fen, puzzle.pov, true);
     this.setReveal('');
@@ -550,9 +559,10 @@ export class App {
     this.enginePromise ??= Engine.boot(p => {
       this.booting = p;
       if (!this.unlocked) this.renderLoading();
-    }).then(
+    }, threadSetting()).then(
       engine => {
         this.booting = undefined;
+        this.booted = engine;
         return engine as Analyser;
       },
       e => {
@@ -611,20 +621,19 @@ export class App {
 const escape = (s: string): string =>
   s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
-/**
- * The masters explorer is the one part of this that cannot be checked from the
- * machine it was written on — it answers 401 there — so the app has to be able
- * to say for itself whether the lookups happened.
- */
-function bookLine(stats: (BookStats & { cancelled: number }) | undefined): string {
-  if (!stats || !stats.lookups) return 'no opening positions looked up yet';
-  const failed = stats.failed
-    ? ` · <span class="bad">${stats.failed} failed${
-        stats.lastError ? ` (${escape(stats.lastError)})` : ''
-      }</span>`
-    : '';
-  return `${stats.lookups} looked up in the masters explorer, ${stats.answered} answered${failed} ·
-    ${stats.cancelled} candidate${stats.cancelled === 1 ? '' : 's'} dropped as book`;
+/** 0 means "decide for me", which is what most people want and what we default to. */
+const threadSetting = (): number => settings().threads || Engine.defaultThreads();
+
+function threadOptions(): string {
+  const chosen = settings().threads;
+  const cores = navigator.hardwareConcurrency || 0;
+  const counts = [1, 2, 3, 4, 6, 8].filter(n => !cores || n <= cores);
+  return [
+    `<option value="0"${chosen === 0 ? ' selected' : ''}>automatic (${Engine.defaultThreads()})</option>`,
+    ...counts.map(
+      n => `<option value="${n}"${n === chosen ? ' selected' : ''}>${n} core${n === 1 ? '' : 's'}</option>`,
+    ),
+  ].join('');
 }
 
 const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
