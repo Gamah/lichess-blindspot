@@ -75,3 +75,110 @@ const toWhite = (score: EvalScore, turn: Color): EvalScore =>
 export function fenTurn(fen: string): Color {
   return fen.split(' ')[1] === 'b' ? 'black' : 'white';
 }
+
+export interface SessionOptions {
+  threads?: number;
+  hashMb?: number;
+}
+
+/**
+ * Drives one engine: options, handshake, and one search at a time. It knows
+ * nothing about where the engine is running, which is what lets the node
+ * scripts exercise this exact code rather than an approximation of it.
+ */
+export class UciSession {
+  private readonly send: (cmd: string) => void;
+  private queue: Promise<unknown> = Promise.resolve();
+  private onLine: ((line: string) => void) | undefined;
+  private closed = false;
+
+  constructor(send: (cmd: string) => void) {
+    this.send = send;
+  }
+
+  /** Feed every line the engine prints to this. */
+  receive(line: string): void {
+    this.onLine?.(line);
+  }
+
+  /** Set options and wait for `readyok`, so nothing is sent into a cold engine. */
+  handshake(opts: SessionOptions = {}): Promise<void> {
+    return this.exchange<void>(
+      () => {
+        this.send('uci');
+        this.send(`setoption name Threads value ${opts.threads ?? 1}`);
+        this.send(`setoption name Hash value ${opts.hashMb ?? 128}`);
+        this.send('setoption name MultiPV value 1');
+        this.send('ucinewgame');
+        this.send('isready');
+      },
+      (line, done) => {
+        if (line === 'readyok') done();
+      },
+    );
+  }
+
+  /** Analyse one position. Serialised: an engine is one search at a time. */
+  analyse(req: Request): Promise<EngineLine> {
+    const run = () => this.search(req);
+    const result = this.queue.then(run, run);
+    // Keep the chain alive even when one request rejects.
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.send('quit');
+  }
+
+  private search(req: Request): Promise<EngineLine> {
+    if (this.closed) return Promise.reject(new Error('Engine stopped'));
+    const turn = fenTurn(req.fen);
+    const limit = req.movetime !== undefined ? `movetime ${req.movetime}` : `depth ${req.depth ?? 12}`;
+    let best: EngineLine | undefined;
+    return this.exchange<EngineLine>(
+      () => {
+        this.send(`position fen ${req.fen}`);
+        this.send(`go ${limit}`);
+      },
+      (line, done, fail) => {
+        const info = parseInfo(line, turn);
+        // Keep the deepest scored line: the last `info` before `bestmove` is
+        // often a bare depth report with no score at all.
+        if (info && (!best || info.depth >= best.depth)) best = info;
+        if (!line.startsWith('bestmove')) return;
+        if (!best) return fail(new Error(`No evaluation for ${req.fen}`));
+        const bestmove = parseBestmove(line);
+        // Trust `bestmove` over the last pv we saw: they agree except when the
+        // search was cut off part-way through a line.
+        done(bestmove && best.pv[0] !== bestmove ? { ...best, pv: [bestmove] } : best);
+      },
+    );
+  }
+
+  private exchange<T>(
+    start: () => void,
+    handle: (line: string, done: (value: T) => void, fail: (e: Error) => void) => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.onLine = line =>
+        handle(
+          line,
+          value => {
+            this.onLine = undefined;
+            resolve(value);
+          },
+          e => {
+            this.onLine = undefined;
+            reject(e);
+          },
+        );
+      start();
+    });
+  }
+}

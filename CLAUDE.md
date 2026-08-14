@@ -86,6 +86,23 @@ lila boots it (`ui/lib/src/ceval/engines/stockfishWebEngine.ts`, read
 - UCI scores are from the side to move; `parseInfo` normalises to White's POV
   at the boundary so nothing downstream has to think about it.
 
+**The engine also runs on node here, and that is the only way any of this gets
+verified off a browser.** `UciSession` is transport-agnostic on purpose, so
+`npm run engine-smoke` and `npm run verify-analysis` drive the real browser code
+against the real engine. Keep it that way: put engine logic in `UciSession`, not
+in the `Engine` wrapper, or it becomes unverifiable on this host.
+
+Verified 2026-08-14 with `npm run verify-analysis`, against games lichess had
+analysed, sweep depth 12 / deep 1000 ms / 4 threads:
+
+- 45-move game: **~10 s per side**, and our candidate set was identical to the
+  one lichess' own analysis produces, 3 of 3 on both sides.
+- 144-move game: 15–20 s per side; 5 of lichess' 8 white candidates and 3 of its
+  4 black ones, plus two it didn't flag. Disagreement at the edges is expected —
+  lichess searches deeper — but the middle of the distribution matches.
+- The sweep is not the expensive half: ~0.1 s a position. The deep re-checks
+  are, at 2 s a candidate.
+
 ## Node's type stripping
 
 Tests run under `node --test --experimental-strip-types`, which is **strip-only**:
