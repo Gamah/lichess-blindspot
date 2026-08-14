@@ -179,6 +179,27 @@ Thresholds that are load-bearing and must not drift silently:
   curr is not mate
 - accept an alternative move: `povDiff(pov, yourEval, prevEval) > -0.04`
 
+## Browsers that refuse storage
+
+Firefox with cookies blocked for a site throws `SecurityError: The operation is
+insecure` when a storage API is **touched** — reading, not just writing. So:
+
+- **Never call a storage API at module scope.** `idb-keyval`'s `createStore`
+  opens the database eagerly, and at module scope that throw happens while the
+  bundle is being evaluated: nothing renders at all, no board, no error, no
+  page. Open on first use. (`src/engine/assetCache.ts` did this and was the
+  worst of three such bugs.)
+- Every `sessionStorage` / `localStorage` / IndexedDB access is inside a
+  `try`, and `Profile` records `available: false` and fails soft rather than
+  throwing.
+- **Nothing on the boot path may reject.** `ensureIsolation` cannot throw and
+  `main.ts` catches anyway; a page that renders without an engine beats a page
+  that renders nothing.
+- Failing soft is not sufficient on its own: session state that lives only in
+  storage stops advancing when writes no-op. The pipeline's paging state
+  (`until`, `seen`) is held in memory and written through, or a refill would
+  re-fetch and re-analyse the same twenty games forever.
+
 ## Storage
 
 - IndexedDB via `idb-keyval` for games, deck and solve history. One store per
