@@ -40,12 +40,27 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - A request with **no User-Agent gets 404**, not 403 — lila's `NoCrawlers`
   guard. Browsers always send one, so this only ever bites dev scripts and
   curl, but the status code makes it look like the user doesn't exist.
-- **The games export appears to be blocked per IP, not merely rate limited.**
-  This host gets `429` for every request, always; a home connection got one on
-  its very first export while the same build worked immediately from a phone on
-  a mobile IP (2026-08-14). Treat a persistent 429 as "this address is not
-  welcome", not as "we are asking too fast" — retrying harder makes it worse,
-  and there is nothing to fix in the request.
+- **A persistent `429` on the by-user export is a leaked stream, not a block.**
+  Traced through lila 2026-08-14: `Game.handleExport` wraps the source in
+  `apiC.GlobalConcurrencyLimitPerIpAndUserOption`, which for an anonymous
+  request is `GlobalConcurrencyLimitPerIP.download` — `ConcurrencyLimit(key =
+  "api.ip.download", ttl = 1.hour, maxConcurrency = 2)`, keyed by IP.
+  `compose` increments on start and decrements from `watchTermination`, i.e.
+  **only when the stream ends**. So a client that stops reading without closing
+  the body holds a slot; two of those and the address is locked out. The count
+  lives in a Caffeine cache with `expireAfterWrite(1.hour)` and a *rejected*
+  request does not write, so it must clear within an hour of the last
+  successful start.
+  - The reply is always `{"error":"Please only run 1 request(s) at a time"}`
+    whatever the real limit is — `.getOrElse(ConcurrencyLimit.limitedDefault(1))`
+    hardcodes the 1. Do not read a maximum out of that sentence.
+  - `exportOne` (`/game/export/{id}`) has **no** concurrency limiter at all,
+    which is why single-game export keeps working from an address the by-user
+    export is refusing. That asymmetry is the diagnostic, not a coincidence.
+  - Two ways we leaked slots ourselves: `fetchGames` abandoned mid-iteration
+    without cancelling the reader (fixed — it cancels in a `finally`), and
+    `curl ... | head`, where the truncated pipe kills curl mid-stream. **Write
+    probe output to a file.**
 - Exceeding the one-concurrent-export limit returns
   `429 {"error":"Please only run 1 request(s) at a time"}`. Distinct from the
   per-second rate limit and worth reporting to the user differently.

@@ -77,19 +77,32 @@ export async function* fetchGames(username: string, opts: FetchOptions = {}): As
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += value;
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (line) yield JSON.parse(line) as ExportedGame;
+  // The `finally` is the important part, and it is not tidiness. lichess counts
+  // concurrent exports per IP and only decrements when the *stream* ends
+  // (`ConcurrencyLimit.compose` -> `watchTermination`), with the count held for
+  // an hour. A caller that stops iterating — an exception in the loop body, a
+  // `break`, an abandoned generator — leaves the body open, so lichess goes on
+  // believing an export is running and answers 429 to the next one. Two of
+  // those and the address is locked out for the rest of the hour.
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line) yield JSON.parse(line) as ExportedGame;
+      }
     }
+    const tail = buffer.trim();
+    if (tail) yield JSON.parse(tail) as ExportedGame;
+  } finally {
+    // Cancel rather than merely release: cancelling tears down the connection,
+    // which is what tells lichess the export is over.
+    await reader.cancel().catch(() => {});
   }
-  const tail = buffer.trim();
-  if (tail) yield JSON.parse(tail) as ExportedGame;
 }
 
 /**

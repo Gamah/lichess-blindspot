@@ -42,6 +42,34 @@ test('ndjson arrives one game at a time, split across chunk boundaries', async (
   );
 });
 
+test('abandoning the stream closes it, so lichess stops counting the export', async () => {
+  // This is the whole reason the generator has a `finally`: lichess decrements
+  // its per-IP export counter when the stream ends, and holds the count for an
+  // hour. A caller that stops reading without closing locks the address out.
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encode = new TextEncoder();
+      controller.enqueue(encode.encode(JSON.stringify(game('aaa', 'someone', 'other')) + '\n'));
+      // and then nothing more, forever — an export still streaming
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  await withFetch(
+    () => new Response(body),
+    async () => {
+      for await (const g of fetchGames('someone')) {
+        assert.equal(g.id, 'aaa');
+        break; // the caller has what it wanted, or has thrown
+      }
+    },
+  );
+  assert.equal(cancelled, true);
+});
+
 test('the two meanings of 429 are told apart', async () => {
   const concurrent = await withFetch(
     () => new Response('{"error":"Please only run 1 request(s) at a time"}', { status: 429 }),
