@@ -14,6 +14,7 @@
 
 import { findCandidates } from '../analysis/candidates.ts';
 import type { Color } from '../analysis/winningChances.ts';
+import type { RankTask } from '../engine/analyse.ts';
 import { povOf, type ExportedGame } from '../lichess/export.ts';
 import { buildPuzzles, type Puzzle } from './build.ts';
 import { replay, type ReplayStep } from './positions.ts';
@@ -59,18 +60,15 @@ export interface DeriveOptions {
 }
 
 /**
- * The deck's whole build step, for one game. Empty when the game has no
- * analysis yet — a game nobody has evaluated holds no puzzles, and this is not
- * the place that pays for one.
+ * The candidates this game would contribute, in order and already capped. The
+ * step between "the finder found it" and "it can be shown": both the deck and
+ * the ranking backlog work from this list, so the position that gets ranked is
+ * always the position that would be shown.
  */
-export function puzzlesFromGame(
-  game: ExportedGame,
-  username: string,
-  opts: DeriveOptions = {},
-): Puzzle[] {
-  if (!game.analysis?.length) return [];
+function chosenCandidates(game: ExportedGame, username: string, opts: DeriveOptions) {
+  if (!game.analysis?.length) return undefined;
   const prepared = prepareGame(game, username);
-  if (!prepared) return [];
+  if (!prepared) return undefined;
   const kept = findCandidates(prepared.moves, game.analysis, {
     pov: prepared.pov,
     ...(prepared.fromPly !== undefined ? { fromPly: prepared.fromPly } : {}),
@@ -79,6 +77,45 @@ export function puzzlesFromGame(
   // lichess analysed for us costs nothing to find but is capped too, so a deck
   // looks the same whichever way the evals arrived.
   const max = opts.maxPerGame ?? 0;
-  const chosen = max > 0 ? kept.slice(0, max) : kept;
-  return buildPuzzles(game.id, prepared.steps, chosen, prepared.pov);
+  return { prepared, chosen: max > 0 ? kept.slice(0, max) : kept };
+}
+
+/**
+ * The deck's whole build step, for one game. Empty when the game has no
+ * analysis yet — a game nobody has evaluated holds no puzzles, and this is not
+ * the place that pays for one.
+ *
+ * A candidate with no ranking is **withheld**, not shown unranked: the whole
+ * point of gathering `alts` up front is that a position arrives knowing what
+ * the engine's five best moves are, and a puzzle that does not know cannot be
+ * judged on Medium or Hard, cannot draw its arrows, and would answer
+ * differently on a later showing. `unrankedPlies` is how it gets un-withheld.
+ */
+export function puzzlesFromGame(
+  game: ExportedGame,
+  username: string,
+  opts: DeriveOptions = {},
+): Puzzle[] {
+  const found = chosenCandidates(game, username, opts);
+  if (!found) return [];
+  const ranked = found.chosen.filter(c => c.alts?.length);
+  return buildPuzzles(game.id, found.prepared.steps, ranked, found.prepared.pov);
+}
+
+/**
+ * The positions in this game that would be puzzles if they had been ranked.
+ * Empty for a game that is fully ranked, which is the common case and is why
+ * the backlog pass can walk the whole store cheaply.
+ */
+export function unrankedPlies(
+  game: ExportedGame,
+  username: string,
+  opts: DeriveOptions = {},
+): RankTask[] {
+  const found = chosenCandidates(game, username, opts);
+  if (!found) return [];
+  return found.chosen
+    .filter(c => !c.alts?.length)
+    .map(c => ({ index: c.index, fen: found.prepared.steps[c.index]?.fen ?? '' }))
+    .filter(task => task.fen);
 }

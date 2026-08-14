@@ -11,6 +11,7 @@
 //
 // See CLAUDE.md: -0.04 is load-bearing and comes straight from retroCtrl.
 
+import type { Alt } from '../analysis/candidates.ts';
 import { povDiff, type EvalScore } from '../analysis/winningChances.ts';
 import type { Puzzle } from '../deck/build.ts';
 
@@ -44,13 +45,44 @@ export const isDifficulty = (value: unknown): value is Difficulty =>
   DIFFICULTIES.includes(value as Difficulty);
 
 /**
- * `top` is the engine's moves in its own order, best first. Rank is decided on
- * the move alone: the same move reached by a different move order does not
- * exist here, a uci is a uci.
+ * Where this move sits in the engine's own order, 0-based, or -1. Rank is
+ * decided on the move alone: the same move reached by a different move order
+ * does not exist here, a uci is a uci.
  */
-export function withinTopLines(uci: string, top: readonly string[], lines: number): boolean {
-  return lines <= 0 || top.slice(0, lines).includes(uci);
+export const rankOf = (uci: string, alts: readonly Alt[]): number =>
+  alts.findIndex(a => a.uci === uci);
+
+export function withinTopLines(uci: string, alts: readonly Alt[], lines: number): boolean {
+  if (lines <= 0) return true;
+  const rank = rankOf(uci, alts);
+  return rank >= 0 && rank < lines;
 }
+
+/**
+ * The whole verdict on an invented move at a given difficulty, decided from
+ * what the puzzle already carries — no engine, because the ranking was
+ * gathered before the position was ever shown.
+ *
+ * `outside` means the engine did not rank the move at all, so there is no
+ * score for it and no verdict to give from here: Easy has to go and search it,
+ * and the harder settings do not have to, because not being ranked is already
+ * the answer.
+ */
+export function judgeRanked(
+  puzzle: Puzzle,
+  uci: string,
+  lines: number,
+): { verdict: 'win' | 'fail'; rank: number } | { verdict: 'outside'; rank: -1 } {
+  const rank = rankOf(uci, puzzle.alts);
+  if (rank < 0) return lines > 0 ? { verdict: 'fail', rank: -1 } : { verdict: 'outside', rank: -1 };
+  if (!withinTopLines(uci, puzzle.alts, lines)) return { verdict: 'fail', rank };
+  // Inside the ranking, the eval test still has to pass: being fifth-best is
+  // no defence in a position where only two moves hold.
+  return { verdict: judgeEval(puzzle, scoreOf(puzzle.alts[rank]!)), rank };
+}
+
+const scoreOf = (alt: Alt): EvalScore =>
+  alt.mate !== undefined ? { mate: alt.mate } : { cp: alt.eval ?? 0 };
 
 export interface Move {
   uci: string;
@@ -90,6 +122,8 @@ export class Solve {
   feedback: Feedback = 'find';
   /** Set on a fail, so the board can show what went wrong before resetting. */
   lastAttempt: Move | undefined;
+  /** Where the last attempt sat in the engine's order, 0-based, or -1. */
+  rank = -1;
 
   readonly puzzle: Puzzle;
   readonly openingUcis: readonly string[];
@@ -118,16 +152,28 @@ export class Solve {
   }
 
   /**
-   * The answer to the 'eval' state, once the local engine has one.
+   * The difficulty gate, decided from what the puzzle already carries — no
+   * engine. Returns 'eval' when there is a search still to do, which is now
+   * only ever one case: Easy, and a move the engine did not rank, so nothing
+   * stored says what it is worth.
    *
-   * `ranked` is the difficulty gate: false means the move was outside the top
-   * lines the setting asks for, which fails whatever the eval says — and there
-   * is then usually no score to weigh either, because a move the engine did
-   * not rank never got one.
+   * On Medium and Hard that case cannot arise, because not being ranked is
+   * itself the answer. So the harder the setting, the less the solve loop asks
+   * of the engine.
    */
-  onCeval(yourEval: EvalScore | undefined, ranked = true): Feedback {
+  onRanked(lines: number): Feedback {
+    if (this.feedback !== 'eval' || !this.lastAttempt) return this.feedback;
+    const judged = judgeRanked(this.puzzle, this.lastAttempt.uci, lines);
+    this.rank = judged.rank;
+    if (judged.verdict === 'outside') return 'eval';
+    this.feedback = judged.verdict;
+    return this.feedback;
+  }
+
+  /** The answer to a leftover 'eval', once the local engine has one. */
+  onCeval(yourEval: EvalScore): Feedback {
     if (this.feedback !== 'eval') return this.feedback;
-    this.feedback = ranked && yourEval ? judgeEval(this.puzzle, yourEval) : 'fail';
+    this.feedback = judgeEval(this.puzzle, yourEval);
     return this.feedback;
   }
 

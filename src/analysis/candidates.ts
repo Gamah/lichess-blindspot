@@ -14,13 +14,38 @@
 
 import { povDiff, type Color, type EvalScore } from './winningChances.ts';
 
-/** One entry of the `analysis` array from GET /api/games/user/{u}?evals=true */
+/**
+ * One of the engine's ranked alternatives, with the score its line reaches —
+ * White's point of view, like every other number in this file.
+ */
+export interface Alt {
+  uci: string;
+  eval?: number;
+  mate?: number;
+}
+
+/**
+ * One entry of the `analysis` array from GET /api/games/user/{u}?evals=true,
+ * plus `alts`, which is ours.
+ */
 export interface AnalysisEntry {
   eval?: number; // centipawns, white POV
   mate?: number; // white POV
   best?: string; // uci
   variation?: string; // SAN, space separated, <= 12 plies
   judgment?: { name: string; comment: string };
+  /**
+   * Ours, not lichess'. The engine's best moves from the position *before*
+   * this ply, best first; `alts[0].uci` is the same move as `best`. The
+   * difficulty gate is "is your move in here", and the arrows on a solved
+   * position are these.
+   *
+   * Absent on everything lichess gave us and on every ply that is not a
+   * candidate — it is only ever gathered where a puzzle can come from, because
+   * it costs a real search per position. A candidate without it is not shown:
+   * see `puzzlesFromGame`.
+   */
+  alts?: Alt[];
 }
 
 export interface Candidate {
@@ -38,6 +63,13 @@ export interface Candidate {
   eval: EvalScore;
   /** Inaccuracy | Mistake | Blunder, when lichess supplied one. */
   judgment?: string;
+  /**
+   * Carried through from the entry, not computed here — the finder is lila's
+   * test and stays lila's test. Absent means "not ranked yet", which is what
+   * `puzzlesFromGame` withholds a puzzle for and what the backlog pass looks
+   * for.
+   */
+  alts?: Alt[];
 }
 
 const score = (a: AnalysisEntry | undefined): EvalScore | undefined => {
@@ -94,6 +126,7 @@ export function findCandidates(
       prevEval: prev,
       eval: curr,
       judgment: entry.judgment?.name,
+      ...(entry.alts ? { alts: entry.alts } : {}),
     });
   }
   return out;

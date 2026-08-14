@@ -23,6 +23,7 @@ const puzzle = (gameId: string, ply: number): Puzzle => ({
   pv: ['d4'],
   prevEval: { cp: 0 },
   eval: { cp: -200 },
+  alts: [{ uci: 'd2d4', eval: 0 }],
 });
 
 const runsOfOneGame = (deck: readonly Puzzle[]): number =>

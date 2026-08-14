@@ -20,13 +20,19 @@ import type { Color } from '../analysis/winningChances.ts';
  * Chessground has no per-shape opacity (`modifiers` is lineWidth and hilite
  * only), so a fade has to be a brush per step.
  */
-const RANK_BRUSHES: Record<string, { key: string; color: string; opacity: number; lineWidth: number }> =
-  Object.fromEntries(
+type Brush = { key: string; color: string; opacity: number; lineWidth: number };
+
+const RANK_BRUSHES: Record<string, Brush> = {
+  ...Object.fromEntries(
     [0.85, 0.65, 0.5, 0.38, 0.28].map((opacity, i) => [
       `rank${i + 1}`,
       { key: `r${i + 1}`, color: '#003088', opacity, lineWidth: 12 - i },
     ]),
-  );
+  ),
+  // The one you found, at full strength — chessground's green, so it reads as
+  // the same "yes" the feedback line gives.
+  found: { key: 'fnd', color: '#15781B', opacity: 0.9, lineWidth: 12 },
+};
 
 export interface PlayedMove {
   uci: string;
@@ -110,20 +116,24 @@ export class Board {
   }
 
   /**
-   * The reveal: go back to the position that was set as the puzzle — the board
-   * is showing whatever the last move played left behind — and put everything
-   * about it on at once. `top` is the engine's own ordering, best first, drawn
-   * numbered and fading; `played` is what the game did, in red.
+   * The reveal, drawn on the board **as it stands** — the position after
+   * whatever move ended the solve, not the one the puzzle handed out. So the
+   * arrows leave from squares their pieces have left, which reads as what it
+   * is: these were the options, and here is what happened instead.
    *
-   * Numbering rather than colour alone because five shades of one blue is a
-   * ranking nobody can read off the board, and because the numbers are what
-   * make "you found its third choice" a sentence.
+   * `top` is the engine's own ordering, best first, numbered and fading.
+   * `played` is what the game did, in red. `found` is the move that solved it:
+   * if the engine ranked it, that arrow turns green and keeps its number, so
+   * "you found its third choice" is legible from the board alone.
+   *
+   * Numbered rather than coloured alone, because five shades of one blue is a
+   * ranking nobody can read.
    */
-  reveal(fen: string, orientation: Color, top: readonly string[], played?: string): void {
-    this.set(fen, orientation, false);
-    const shapes: DrawShape[] = top
-      .slice(0, 5)
-      .map((uci, i) => ({ ...arrow(uci, `rank${i + 1}`), label: { text: String(i + 1) } }));
+  reveal(top: readonly string[], played?: string, found?: string): void {
+    const shapes: DrawShape[] = top.slice(0, 5).map((uci, i) => ({
+      ...arrow(uci, uci === found ? 'found' : `rank${i + 1}`),
+      label: { text: String(i + 1) },
+    }));
     // Last, so it draws over the fan of blue rather than under it.
     if (played) shapes.push(arrow(played, 'red'));
     this.cg.setShapes(shapes);

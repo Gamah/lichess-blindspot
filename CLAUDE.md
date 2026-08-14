@@ -184,50 +184,107 @@ Thresholds that are load-bearing and must not drift silently:
 **Ours, not lila's — lila has only the eval test.** `TOP_LINES` in
 `src/solve/retro.ts`: easy `0`, medium `5`, hard `2`. It is a *second* test, not
 a replacement: on medium and hard a move must pass the -0.04 eval test **and**
-be inside the top n of a MultiPV search of the puzzle position. Being ranked
-fifth is no defence in a position where only two moves hold.
+be inside the top n of the engine's ranking of the position. Being ranked fifth
+is no defence in a position where only two moves hold.
 
 - Easy is the behaviour that predates the setting, and is the default, so a
   returning player who picks it is where they were.
 - `classify` short-circuits first, so the engine's own move and a mate are
   accepted at every setting, and the move played in the game is refused at
   every setting. The gate only ever judges an invented move.
-- The ranking is one `analyseLines` call at `RANK_MOVETIME` (1.5 s, MultiPV 5),
-  memoised per puzzle in `App.ranking` — three attempts on one position is one
-  search, and the reveal re-uses it. **That is not a deep analysis**, and the
-  copy in Settings and on the notice says so: it settles the best move or two
-  and little more, so a longer search or lichess' own will sometimes disagree
-  about what is third. Don't quietly present the order as authoritative.
-- On medium and hard the MultiPV search replaces the one-line judge search
-  rather than joining it: a move inside the ranking is scored by its own line,
-  a move outside it is refused without a second search. So the cost is the same
-  order as Easy, not double.
-- Easy still pays for the ranking once per *solved* position, for the arrows.
+
+**The ranking is gathered before a position is ever shown, and stored.**
+`AnalysisEntry.alts` — ours, absent on everything lichess sent — holds the
+engine's `RANK_LINES` (5) best moves from the position *before* that ply, with
+the eval each line reaches, best first. `alts[0].uci` is `best`.
+
+This is the load-bearing decision in the whole feature, and it is why:
+
+- **A verdict must not depend on when you solved.** A fresh MultiPV search at
+  solve time reorders ranks 2–5 run to run, so the same move would be accepted
+  on Tuesday and refused on Wednesday. Stored, the rank is a property of the
+  position.
+- **It buys depth.** Background work can afford `RANK_MOVETIME` (2 s) where an
+  interactive one cannot.
+- **The solve loop stops needing an engine.** `judgeRanked` reads rank *and*
+  score out of `alts`, so Medium and Hard ask the engine nothing at all. The
+  one case left is Easy with a move outside the ranking, where nothing stored
+  says what it is worth — `Solve.onRanked` returns `'eval'` for exactly that,
+  and only then does `App.judge` search.
+
+**A candidate with no ranking is withheld, not shown unranked** —
+`puzzlesFromGame` filters on `alts`. So the ranking is not an enhancement that
+can be skipped; it gates the deck. Its counterpart is `unrankedPlies`, which
+returns exactly the positions that were withheld, and both go through the same
+`chosenCandidates` helper so that what gets ranked is always what would be
+shown (the `maxPerGame` cap included — raising it queues work rather than
+producing positions instantly, which is a change from when derivation was free).
+
+**Where the ranking comes from.** `analyseGame`'s pass 2 already searched the
+before-position for `best` and `variation`, so it now does that search with
+MultiPV and writes `alts` from the same result — our own analysis pays almost
+nothing extra. Games *lichess* analysed are the expensive case: the export
+carries one variation per ply and there is no way to ask for four more, so
+every candidate in them needs a `rankCandidates` search that we did not used to
+pay. `Pipeline.rankBacklog` does that once per session, before any fetching,
+over the stored games; `Pipeline.analyse` does it for newly fetched ones. It is
+**not** a re-analysis — the sweep already happened and the candidates are known,
+so it is one search per position that would be shown.
 
 **MultiPV is sent on every search**, `analyse` included, because one session is
-shared between the background sweep and the solve loop and a MultiPV left at 5
+shared between the background pass and the solve loop and a MultiPV left at 5
 would make the sweep about five times slower. Verified against the real engine
-by `npm run engine-smoke`, which checks the five ranks come back in order, with
-distinct first moves and descending White-POV scores, that a position with one
-legal move yields one line, and that the next ordinary search is single-line.
+by `npm run engine-smoke`: five ranks come back in order, with distinct first
+moves and descending White-POV scores; a position with one legal move yields one
+line; the next ordinary search is single-line.
 
-The reveal draws them: `Board.reveal` puts the position back as it was handed
-out, the engine's top five as numbered arrows fading through the `rank1`..
-`rank5` brushes, and the game's move in red over the top. Numbered because five
-shades of one blue is not a ranking anyone can read, and chessground has no
-per-shape opacity — a fade has to be a brush per step, merged into the defaults
-by its deep-merging config.
+`scripts/rank-stability.ts` is what `RANK_MOVETIME` is set from — it ranks a
+real game's positions at several budgets against a long reference search and
+reports how often the best move, the top 2, and the whole order survive. Re-run
+it before changing the number, and keep the copy honest about what it says: the
+app tells the player, in Settings and on the notice and under the board, that
+this is a seconds-long search and not a deep one.
+
+## This uses the processor, and that is the point
+
+Blindspot is a chess engine running in a tab. Ranking every position before
+showing it is CPU work by design, and the app says so rather than hiding it:
+the loading screen names the phase, and the landing page says the fan is
+supposed to spin. **Do not "fix" this by making the engine do less.** If
+something here needs to get cheaper, make it *fewer positions* (the
+`maxPerGame` cap) or *better scheduled* (the pipeline yields to the solve loop
+between searches), never a shallower ranking — a ranking nobody can trust is
+worse than no setting at all.
+
+**Running with no engine is not a supported mode.** It used to be a degraded
+one: games lichess had already analysed produced positions for free. That is
+over — no engine means no ranking means no deck, for everyone. `engineNag`
+therefore says so on every screen and links to a prefilled GitHub issue
+carrying the isolation diagnostics, rather than apologising and carrying on.
+The three causes (no cross-origin isolation, a service worker that never took
+control, a dropped net download) are indistinguishable from the outside, which
+is why the link carries the numbers.
+
+The reveal draws the ranking: `Board.reveal` puts numbered arrows on the board
+**as it stands** — the position after the move that ended the solve, not the one
+the puzzle handed out — so the arrows leave squares their pieces have left,
+which reads as "these were the options". Blue fading through the `rank1`..
+`rank5` brushes, the move that solved it in green if the engine ranked it, and
+the game's move in red on top. Numbered because five shades of one blue is not
+a ranking anyone can read, and chessground has no per-shape opacity, so a fade
+has to be a brush per step — merged into the defaults by its deep-merging
+config.
 
 **How an existing user is told a setting exists.** The same shape as the schema
 reset, and the only other thing in the app that gates the front door:
 `Settings.difficulty` is **absent** until chosen, and `App.begin` asks
 `profile.hasGames()`. Games present and no choice recorded means someone who
 has been solving under the old rule, and they get `renderDifficultyNotice`
-once. An *empty* store is a first visit — nothing to be surprised by — so the
-default is written silently and the notice never appears. Without that stamp a
-new player would meet the notice on their second visit, announcing a change
-that never happened to them. Copy that trick if another setting changes a
-verdict; don't copy it for a setting that only changes taste.
+once — which is also where the catch-up ranking pass is explained, since that
+is the visible cost of the change. An *empty* store is a first visit — nothing
+to be surprised by — so the default is written silently and the notice never
+appears. Without that stamp a new player would meet the notice on their second
+visit, announcing a change that never happened to them.
 
 ## Browsers that refuse storage
 
@@ -290,6 +347,9 @@ solving screens, and the person chooses what goes. Growth is therefore
 unbounded: roughly 2.7 KB per game we analyse and 6.6 KB per game lichess had
 analysed, so ~1 MB per 200 games — latent, not urgent, but do not add an
 automatic purge back without solving "this deletes work the engine did".
+`alts` adds roughly 150 bytes per position kept, which is noise against those
+figures and is the cheapest part of the store to hold and the dearest to
+recreate: two seconds of engine time each, and a purge throws it away.
 
 **Schema resets, `SCHEMA_VERSION` in `src/storage/db.ts`.** There is no
 migration machinery and there should not be. `Profile.stale()` is true when a

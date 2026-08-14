@@ -10,17 +10,9 @@ import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
 import { puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
-import type { Analyser } from '../engine/analyse.ts';
-import type { EngineLine } from '../engine/protocol.ts';
+import { RANK_MOVETIME, type Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import {
-  DIFFICULTIES,
-  SHOWN_LINES,
-  Solve,
-  TOP_LINES,
-  withinTopLines,
-  type Difficulty,
-} from '../solve/retro.ts';
+import { DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
 import {
   mb,
   Profile,
@@ -49,13 +41,6 @@ const REFILL_AT = 5;
 /** How long the engine gets to judge a move the player invented. */
 const JUDGE_MOVETIME = 1000;
 /**
- * And to rank the position's moves, for the difficulty gate and the arrows on
- * a solved position. Longer than the single-line judgement because the same
- * time spread over five lines buys each of them less depth, and the ranking is
- * the thing being shown.
- */
-const RANK_MOVETIME = 1500;
-/**
  * After lichess has said "busy" we hold the front door too. The pipeline backs
  * itself off, but typing the name again builds a fresh one, so the wait has to
  * live out here as well or the retry button becomes a way round it.
@@ -69,12 +54,6 @@ export class App {
   private board: Board | undefined;
   private solve: Solve | undefined;
   private attempts = 0;
-  /**
-   * The engine's top moves for the position on screen, memoised for as long as
-   * it is on screen: the difficulty gate asks for them on every invented move,
-   * and the reveal draws them, and that is one search rather than four.
-   */
-  private ranking: { puzzleId: string; lines: EngineLine[] } | undefined;
   private enginePromise: Promise<Analyser> | undefined;
   private booted: Engine | undefined;
   private engineFailed: string | undefined;
@@ -138,7 +117,7 @@ export class App {
           perfectly good way to spend an evening.</p>
 
         ${error ? `<p class="error">${escape(error)}</p>` : ''}
-        ${isolationWarning(this.isolation)}
+        ${engineNag(this.isolation, this.engineFailed)}
 
         <ol class="steps">
           <li>
@@ -149,9 +128,11 @@ export class App {
           </li>
           <li>
             <h2>Analysed here, in this tab</h2>
-            <p>Games lichess has already analysed bring their evaluations with them and cost
-              nothing. The rest are analysed by Stockfish running in this page — the first visit
-              downloads about 15 MB of neural net, once, and a game takes some seconds.</p>
+            <p>Stockfish runs in this page — the first visit downloads about 15 MB of neural
+              net, once. Games lichess has already analysed bring their evaluations with them and
+              skip the slow half, but every position you are shown is still searched here first,
+              to work out the five best moves in it. That is what the fan on your processor is
+              for, and it is meant to be doing that.</p>
           </li>
           <li>
             <h2>The moments it fell apart</h2>
@@ -214,14 +195,22 @@ export class App {
     this.root.innerHTML = `
       <main class="loading">
         <h1>Blindspot</h1>
-        <p class="status">${escape(boot?.message ?? 'Analysing your games')}</p>
+        <p class="status">${escape(
+          boot?.message ?? (this.progress.backlog ? 'Ranking your positions' : 'Analysing your games'),
+        )}</p>
         ${this.notice ? `<p class="warn">${escape(this.notice)}</p>` : ''}
+        ${engineNag(this.isolation, this.engineFailed)}
         <div class="bar"><div class="fill" style="width:${Math.round(bar * 100)}%"></div></div>
         <p class="detail">${done} game${done === 1 ? '' : 's'} analysed · ${found} position${
           found === 1 ? '' : 's'
         } found</p>
-        <p class="hint">Games lichess has already analysed are free; the rest are analysed here, in your
-          browser, which is slower and warmer.</p>
+        <p class="hint">${
+          this.progress.backlog
+            ? `Working out the engine's five best moves for positions already stored — ${this.progress.backlog} game${
+                this.progress.backlog === 1 ? '' : 's'
+              } to go. Nothing is being downloaded again; this is the processor, and it is supposed to be busy.`
+            : 'Games lichess has already analysed skip the slow half; every position is then searched here to rank its alternatives, which is slower and warmer and deliberate.'
+        }</p>
       </main>
       ${footer()}`;
   }
@@ -235,6 +224,7 @@ export class App {
         <button id="switch" class="quiet">Switch player</button>
       </header>
       <p class="warn" id="notice" hidden></p>
+      <div id="engine-nag"></div>
       <main class="solving">
         <div class="board-wrap"><div class="board" id="board"></div></div>
         <aside class="side">
@@ -309,11 +299,11 @@ export class App {
       <div class="setting">
         <label for="max-per-game">Positions per game</label>
         <select id="max-per-game">${options}</select>
-        <p class="hint">Finding mistakes is cheap; confirming one costs a pair of second-long
-          searches. Fewer per game means games are analysed faster and the deck draws from a
-          wider spread of them. Changing it rebuilds the deck from the games already analysed —
-          though raising it only finds more in games lichess analysed for us, since our own pass
-          stops searching once it has enough.</p>
+        <p class="hint">Finding mistakes is cheap; confirming one and ranking its alternatives
+          costs a few seconds of engine time. Fewer per game means games are analysed faster and
+          the deck draws from a wider spread of them. Raising it can only find more in games
+          lichess analysed for us — our own pass stops searching once it has enough — and those
+          extra positions appear as the engine gets round to ranking them, not immediately.</p>
       </div>
 
       <div class="setting">
@@ -524,15 +514,21 @@ export class App {
           this one of the moves I would name". <strong>Medium</strong> wants your move inside the
           engine's top 5 from that position, <strong>Hard</strong> inside its top 2. The engine's
           own move and a move that mates are accepted whatever you pick.</p>
-        <p class="warn">Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second
-          search in this browser. That is enough to be confident about the best move or two and
-          not much more: a deeper search, or lichess' own analysis, will sometimes put a different
-          move third. Hard is strict about something the engine is sure of; Medium's top 5 is
-          wide enough that the disagreement rarely reaches its edge. Neither is a verdict on your
-          move from on high.</p>
-        <p>Whatever you pick, a solved position now shows the engine's top five as numbered blue
-          arrows, and it can be changed at any time in Settings. Your games, analysis and solving
-          history are untouched — this is a setting, not a change to what is stored.</p>
+        <p class="warn">Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(0)}-second
+          search in this browser, worked out before a position is ever put in front of you. That
+          is enough to settle the best move or two and not much more: a deeper search, or lichess'
+          own analysis, will sometimes put a different move third. Hard is strict about something
+          the engine is sure of; Medium's top 5 is wide enough that the disagreement rarely
+          reaches its edge. Neither is a verdict on your move from on high.</p>
+        <p><strong>Whichever you pick, there is some catching up to do first.</strong> Every game
+          already stored has to have its positions ranked, including the ones lichess analysed for
+          you — the export gives one best move per position and no way to ask for four more. It is
+          one search per position you would be shown, not a re-analysis, and it runs in the
+          background: expect a few minutes of a busy processor, and the deck opens as soon as the
+          first few are done. Nothing is downloaded again and nothing stored is lost.</p>
+        <p>A solved position now also shows those five as numbered arrows, with the one you found
+          in green and the move the game played in red. The setting can be changed at any time in
+          Settings.</p>
         <div class="choices">
           ${DIFFICULTIES.map(
             d => `<button data-difficulty="${d}">${DIFFICULTY_NAMES[d]}${
@@ -639,12 +635,20 @@ export class App {
     this.attempts++;
     const verdict = solve.play(move);
     if (verdict === 'eval') {
+      const lines = TOP_LINES[difficulty()];
+      // The ranking was gathered before this position was ever shown, so the
+      // usual answer is instant and costs the engine nothing.
+      const ranked = solve.onRanked(lines);
+      if (ranked !== 'eval') return this.afterVerdict(ranked === 'win', move, rankNote(solve, lines));
+
+      // All that is left is Easy with a move the engine did not rank: nothing
+      // stored says what it is worth, so go and find out.
       this.setFeedback(`<strong>Checking ${escape(move.san)}…</strong>`);
-      const judged = await this.judge(solve, move);
+      const judged = await this.judge(move);
       // With no engine there is no verdict to give, so only the move it would
       // have played can be accepted, and the note says as much.
-      if (judged.engineless) solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
-      else solve.onCeval(judged.score, judged.ranked);
+      if (judged.score) solve.onCeval(judged.score);
+      else solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
       this.afterVerdict(solve.feedback === 'win', move, judged.note);
     } else {
       this.afterVerdict(verdict === 'win', move);
@@ -668,91 +672,20 @@ export class App {
   }
 
   /**
-   * The 'eval' branch of retroCtrl: the player found a move that is neither the
-   * engine's nor the one from the game, so it has to be judged on its merits.
-   *
-   * On Easy that is lila's question and lila's search — one line, from the
-   * position the move led to. On Medium and Hard the move must additionally be
-   * one of the engine's own top few, so the search is a MultiPV one from the
-   * position *before* the move, and it answers both questions at once: a move
-   * inside the ranking comes with the score of its line, and a move outside it
-   * is refused without a second search.
+   * The last case that needs an engine at solve time: Easy, and a move the
+   * ranking does not cover. lila's question and lila's search — one line, from
+   * the position the move led to.
    */
-  private async judge(
-    solve: Solve,
-    move: PlayedMove,
-  ): Promise<{
-    score?: { cp?: number; mate?: number };
-    ranked?: boolean;
-    note?: string;
-    engineless?: boolean;
-  }> {
-    const top = TOP_LINES[difficulty()];
+  private async judge(move: PlayedMove): Promise<{ score?: { cp?: number; mate?: number }; note?: string }> {
     this.pipeline?.pause();
     try {
       const engine = await this.engine();
-      if (!top) {
-        const line = await engine.analyse({ fen: move.after, movetime: JUDGE_MOVETIME });
-        return { score: line.score, ranked: true };
-      }
-      const lines = await this.rankPosition(solve.puzzle, engine);
-      const ucis = lines.map(l => l.pv[0] ?? '');
-      const rank = ucis.indexOf(move.uci);
-      if (!withinTopLines(move.uci, ucis, top))
-        return {
-          ranked: false,
-          note:
-            rank < 0
-              ? `The engine does not have it in its top ${lines.length}.`
-              : `The engine has it ${ordinal(rank + 1)}, and this setting asks for its top ${top}.`,
-        };
-      // The score of the line starting with this move is the eval after it —
-      // the same number the one-line search would have gone and found.
-      return { score: lines[rank]!.score, ranked: true };
+      const line = await engine.analyse({ fen: move.after, movetime: JUDGE_MOVETIME });
+      return { score: line.score };
     } catch {
       return {
-        engineless: true,
         note: 'The engine is unavailable here, so only its own move can be accepted.',
       };
-    } finally {
-      this.pipeline?.resume();
-    }
-  }
-
-  /**
-   * The engine's best moves for a position, best first, memoised for as long
-   * as that position is the one on screen. Throws like any other search, and
-   * the callers treat that as "no engine".
-   */
-  private async rankPosition(puzzle: Puzzle, engine: Analyser): Promise<EngineLine[]> {
-    // Memoised on the position, not the attempt: three tries at one puzzle on
-    // Hard is one search, and the reveal that follows re-uses the same one.
-    if (this.ranking?.puzzleId === puzzle.id) return this.ranking.lines;
-    if (!engine.analyseLines) throw new EngineUnavailable('This engine cannot rank moves.');
-    const lines = await engine.analyseLines({
-      fen: puzzle.fen,
-      movetime: RANK_MOVETIME,
-      multiPv: SHOWN_LINES,
-    });
-    this.ranking = { puzzleId: puzzle.id, lines };
-    return lines;
-  }
-
-  /**
-   * The ranking for the position just solved, for the arrows. Already in hand
-   * whenever the difficulty gate ran; otherwise it is one search, and worth it
-   * — this is the only moment the alternatives can be shown without being the
-   * answer.
-   */
-  private async rankingFor(puzzle: Puzzle): Promise<string[]> {
-    this.pipeline?.pause();
-    try {
-      const lines = await this.rankPosition(puzzle, await this.engine());
-      return lines.map(l => l.pv[0] ?? '').filter(Boolean);
-    } catch {
-      // No engine, or it went away. The reveal still has the played move and
-      // the line from the stored analysis; it just has no fan of alternatives.
-      return [];
     } finally {
       this.pipeline?.resume();
     }
@@ -762,10 +695,15 @@ export class App {
     const solve = this.solve;
     if (!solve || !this.profile) return;
     this.board?.freeze();
-    // The position back as it was handed out, with what the game did on it in
-    // red. Immediately, because the ranking below can take a search and the
-    // board should not sit on the move that ended the solve while it runs.
-    this.board?.reveal(solve.puzzle.fen, solve.puzzle.pov, [], solve.puzzle.played.uci);
+    // Everything about the position at once, on the board as it stands — the
+    // engine's five best as numbered arrows, the move the game played in red,
+    // and the move that ended the solve in green if the engine ranked it. No
+    // search: the ranking arrived with the puzzle.
+    this.board?.reveal(
+      solve.puzzle.alts.map(a => a.uci),
+      solve.puzzle.played.uci,
+      result === 'win' ? solve.lastAttempt?.uci : undefined,
+    );
     this.deck.markSolved([solve.puzzle.id]);
     await this.profile.recordSolve({
       puzzleId: solve.puzzle.id,
@@ -776,17 +714,6 @@ export class App {
     await this.renderReveal(solve.puzzle);
     this.toggleNext(true);
     this.renderCounters();
-    // Then the engine's top few over the top of it, numbered and fading. Last,
-    // because it can take a search — a puzzle moved on from in the meantime
-    // must not have arrows drawn over it.
-    const top = await this.rankingFor(solve.puzzle);
-    if (this.solve === solve && top.length) {
-      this.board?.reveal(solve.puzzle.fen, solve.puzzle.pov, top, solve.puzzle.played.uci);
-      this.appendReveal(`<p class="line dim">Blue arrows are the engine's top ${top.length},
-        numbered best first, from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second search — a deeper
-        one can order them differently, and often does past the first two. Red is the move the
-        game played.</p>`);
-    }
     if (this.deck.unsolvedCount() < REFILL_AT) void this.refill();
   }
 
@@ -825,6 +752,17 @@ export class App {
     this.paintStorageNote();
   }
 
+  /**
+   * Repainted rather than rendered once: the engine can fail long after the
+   * solving screen was built — a dropped net download on the first position
+   * that needs one — and a nag that only appears on the next full render is a
+   * nag nobody sees.
+   */
+  private paintEngineNag(): void {
+    const el = this.root.querySelector('#engine-nag');
+    if (el) el.innerHTML = engineNag(this.isolation, this.engineFailed);
+  }
+
   private paintStorageNote(): void {
     const el = this.root.querySelector('#notice') as HTMLElement | null;
     if (!el) return;
@@ -843,7 +781,17 @@ export class App {
       <p class="line"><span class="label">Swing</span> ${escape(
         `${showEval(puzzle.prevEval)} → ${showEval(puzzle.eval)}`,
       )}${puzzle.judgment ? ` · ${escape(puzzle.judgment)}` : ''}</p>
-      ${game ? gameLine(game, puzzle, move) : ''}`);
+      ${game ? gameLine(game, puzzle, move) : ''}
+      ${
+        puzzle.alts.length > 1
+          ? `<p class="line dim">The numbered arrows are the engine's top ${puzzle.alts.length}
+             from this position, best first, worked out before you were shown it — so the same
+             move gets the same verdict every time it comes round. It is a
+             ${(RANK_MOVETIME / 1000).toFixed(0)}-second search, not a deep one: the first move or
+             two are settled, the tail is not, and a longer search will sometimes reorder it. Red
+             is what the game played.</p>`
+          : ''
+      }`);
   }
 
   private renderExhausted(): void {
@@ -919,12 +867,6 @@ export class App {
     if (el) el.innerHTML = html;
   }
 
-  /** For the parts of the reveal that arrive after a search. */
-  private appendReveal(html: string): void {
-    const el = this.root.querySelector('#reveal');
-    if (el) el.insertAdjacentHTML('beforeend', html);
-  }
-
   private toggleNext(show: boolean): void {
     const next = this.root.querySelector('#next') as HTMLButtonElement | null;
     const solution = this.root.querySelector('#solution') as HTMLButtonElement | null;
@@ -935,6 +877,7 @@ export class App {
   }
 
   private renderCounters(): void {
+    this.paintEngineNag();
     const el = this.root.querySelector('#counters');
     if (!el) return;
     const p = this.progress;
@@ -971,11 +914,12 @@ const DIFFICULTY_HINT = `What counts as finding it. <strong>Easy</strong> accept
   the move to be one the engine itself would name: inside its top 5, or its top 2. The move the
   engine actually plays and a move that mates always count, whatever the setting.
   <br>
-  Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second search on this device,
-  not from a deep one: past the first move or two the order is genuinely uncertain, and a longer
-  search — or lichess' own analysis — will sometimes disagree about what the third-best move is.
-  Hard is the honest setting for that reason; Medium's top 5 is wide enough that the wobble
-  rarely reaches it. Takes effect on the next move you try; the deck does not change.`;
+  Every position is ranked before it is shown to you, so this takes effect immediately and the
+  same move always gets the same answer. That ranking is a
+  ${(RANK_MOVETIME / 1000).toFixed(0)}-second search on this device, not a deep one: past the
+  first move or two the order is genuinely uncertain, and a longer search — or lichess' own
+  analysis — will sometimes disagree about what the third-best move is. Hard is the honest
+  setting for that reason; Medium's top 5 is wide enough that the wobble rarely reaches it.`;
 
 function difficultyOptions(): string {
   const chosen = difficulty();
@@ -985,6 +929,19 @@ function difficultyOptions(): string {
         d === 'easy' ? '' : ` — top ${TOP_LINES[d]}`
       }</option>`,
   ).join('');
+}
+
+/**
+ * What the ranking decided, for the feedback line. The interesting half is
+ * always where the engine put the move, whichever way the verdict went.
+ */
+function rankNote(solve: Solve, lines: number): string | undefined {
+  if (solve.rank < 0)
+    return lines > 0 ? `The engine does not have it in its top ${solve.puzzle.alts.length}.` : undefined;
+  const where = `The engine has it ${ordinal(solve.rank + 1)}`;
+  return lines > 0 && solve.rank >= lines
+    ? `${where}, and this setting asks for its top ${lines}.`
+    : `${where}.`;
 }
 
 const ordinal = (n: number): string =>
@@ -1017,22 +974,45 @@ function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
        rel="noopener">move ${move} vs ${escape(name)}</a>, ${escape(when)}</p>`;
 }
 
+const REPO = 'https://github.com/Gamah/lichess-blindspot';
+
 /**
- * Isolation failing is not a detail: without it there is no engine, so games
- * lichess has not already analysed produce nothing at all. Say which piece is
- * missing rather than "unavailable", because the three causes have three
- * different answers.
+ * **Running without an engine is not a supported mode.** It used to be a
+ * degraded one — games lichess had already analysed produced positions for
+ * free — and it no longer is: a position is not shown until the engine has
+ * ranked its alternatives, so no engine means no deck at all, for everyone.
+ *
+ * So this does not apologise, it nags, and it nags on every screen until it is
+ * fixed. The report link carries the diagnostics, because the three causes
+ * (no isolation, a service worker that never took control, a dropped net
+ * download) look identical from the outside and only the numbers tell them
+ * apart.
  */
-function isolationWarning(report: IsolationReport): string {
-  if (report.isolated) return '';
-  const detail = report.problem
-    ? escape(report.problem)
-    : 'The page is not cross-origin isolated.';
-  return `<p class="warn"><strong>No engine on this load.</strong> ${detail}
-    Games lichess has already analysed still work; the rest need the engine.
-    <span class="dim">isolated: ${report.isolated} · service worker: ${
-      report.controlled ? 'in control' : 'not in control'
-    } · SharedArrayBuffer: ${report.sharedArrayBuffer ? 'yes' : 'no'}</span></p>`;
+function engineNag(report: IsolationReport, failure?: string): string {
+  if (report.isolated && !failure) return '';
+  const facts = [
+    `isolated: ${report.isolated}`,
+    `service worker: ${report.controlled ? 'in control' : 'not in control'}`,
+    `SharedArrayBuffer: ${report.sharedArrayBuffer ? 'yes' : 'no'}`,
+    ...(report.problem ? [`problem: ${report.problem}`] : []),
+    ...(failure ? [`engine: ${failure}`] : []),
+  ];
+  const body = [
+    'The engine did not start. Diagnostics:',
+    '',
+    ...facts.map(f => `- ${f}`),
+    `- url: ${location.href}`,
+    `- userAgent: ${navigator.userAgent}`,
+    '',
+    'What I did before this appeared:',
+  ].join('\n');
+  const url = `${REPO}/issues/new?title=${encodeURIComponent('Engine did not start')}&body=${encodeURIComponent(body)}`;
+  return `<p class="warn nag"><strong>The engine is not running, and it should be.</strong>
+    Stockfish runs in this tab and every position is prepared by it, so without one there is
+    nothing to solve — this is a bug rather than a way to use the app.
+    <a href="${url}" target="_blank" rel="noopener">Report it</a>, and the link will carry the
+    numbers below.
+    <span class="dim">${escape(facts.join(' · '))}</span></p>`;
 }
 
 function footer(): string {

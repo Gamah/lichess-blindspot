@@ -5,9 +5,9 @@
 // between positions, which is at most one search away.
 
 import type { Puzzle } from '../deck/build.ts';
-import { prepareGame, puzzlesFromGame } from '../deck/derive.ts';
+import { prepareGame, puzzlesFromGame, unrankedPlies } from '../deck/derive.ts';
 import type { ReplayStep } from '../deck/positions.ts';
-import { analyseGame, Aborted } from '../engine/analyse.ts';
+import { analyseGame, rankCandidates, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, fetchGames, type ExportedGame } from '../lichess/export.ts';
 import type { Meta, Profile } from '../storage/db.ts';
@@ -35,6 +35,12 @@ export interface Progress {
   current?: number;
   /** True while the engine is doing the work rather than lichess having done it. */
   engineBusy: boolean;
+  /**
+   * Stored games still waiting for their positions to be ranked, or undefined
+   * once there are none. Only ever non-zero on the first run after the ranking
+   * arrived, and the loading screen says what it is doing.
+   */
+  backlog?: number;
 }
 
 const BATCH = 20;
@@ -54,7 +60,7 @@ const BACKOFF = 120_000;
 const RETRY_DELAY = 8_000;
 
 /** Just the storage this needs, so tests can hand it something that isn't IndexedDB. */
-export type Store = Pick<Profile, 'username' | 'meta' | 'setMeta' | 'putGame'>;
+export type Store = Pick<Profile, 'username' | 'meta' | 'setMeta' | 'putGame' | 'games'>;
 
 export class Pipeline {
   private queue: ExportedGame[] = [];
@@ -77,6 +83,8 @@ export class Pipeline {
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
   private exhausted = false;
+  /** The catch-up ranking pass is a once-per-session thing. */
+  private backlogDone = false;
   /** Injectable so the governor can be tested without waiting 30 real seconds. */
   private readonly now: () => number;
 
@@ -103,9 +111,15 @@ export class Pipeline {
    * lichess has run out of games to give.
    */
   async run(): Promise<void> {
-    if (this.running || !this.mayFetch()) return;
+    if (this.running) return;
     this.running = true;
     try {
+      // Before anything is fetched: the games already in the store are paid
+      // for, and ranking them costs nobody a download. This is also what makes
+      // the deck fill at all on the first run after the ranking arrived, since
+      // every stored game is withholding its positions until it has one.
+      await this.rankBacklog();
+      if (!this.mayFetch()) return;
       this.lastExportAt = this.now();
       await this.fetchWithRetry();
       await this.drain();
@@ -195,6 +209,57 @@ export class Pipeline {
     await this.profile.setMeta(meta);
   }
 
+  /**
+   * Rank the candidates of stored games that have none — once per session,
+   * before any fetching.
+   *
+   * Every game already in the store is withholding its positions until this
+   * has run: a puzzle is not shown until the engine's five best moves for it
+   * are known. So on the first run after the ranking arrived this *is* the
+   * deck filling, and it is engine work on games that were free before. That
+   * is the trade, and it is deliberate — see CLAUDE.md. It is not a
+   * re-analysis: the sweep already happened and the candidates are already
+   * known, so it is one search per position that would be shown, not one per
+   * ply of the game.
+   */
+  private async rankBacklog(): Promise<void> {
+    if (this.backlogDone) return;
+    this.backlogDone = true;
+    const maxPerGame = settings().maxPerGame;
+    const work = (await this.profile.games())
+      .map(game => ({ game, tasks: unrankedPlies(game, this.profile.username, { maxPerGame }) }))
+      .filter(w => w.tasks.length && w.game.analysis);
+    if (!work.length) return;
+
+    this.emit({ backlog: work.length, engineBusy: true });
+    try {
+      for (const [i, { game, tasks }] of work.entries()) {
+        await this.gate();
+        await rankCandidates(await this.engine(), game.analysis!, tasks, {
+          signal: this.abort.signal,
+          beforeEach: () => this.gate(),
+          onProgress: (done, total) => this.emit({ current: done / total }),
+        });
+        await this.profile.putGame(game);
+        const puzzles = puzzlesFromGame(game, this.profile.username, { maxPerGame });
+        if (puzzles.length) this.events.onPuzzles(puzzles);
+        this.emit({
+          backlog: work.length - i - 1,
+          gamesDone: this.progress.gamesDone + 1,
+          current: undefined,
+        });
+      }
+    } catch (e) {
+      if (e instanceof Aborted) throw e;
+      // No engine, most likely, which is a broken install rather than a mode
+      // we support: say so and carry on to the fetch, where the same failure
+      // will be waiting and the UI will have something to nag about.
+      this.events.onError(e as Error);
+    } finally {
+      this.emit({ backlog: 0, engineBusy: false, current: undefined });
+    }
+  }
+
   private async fetchBatch(): Promise<void> {
     const meta = await this.state();
     const seen = new Set([...meta.analysed, ...meta.fetched]);
@@ -270,6 +335,21 @@ export class Pipeline {
         maxPerGame,
       );
       // The expensive half of the session lives in this write.
+      await this.profile.putGame(game);
+    }
+
+    // Lichess' analysis carries one variation per ply and no way to ask for
+    // four more, so a game it analysed still owes us a ranking search per
+    // candidate before any of them can be shown. Our own pass gathers them as
+    // it goes, so this is usually empty for those.
+    const tasks = unrankedPlies(game, this.profile.username, { maxPerGame });
+    if (tasks.length && game.analysis) {
+      this.emit({ engineBusy: true });
+      await rankCandidates(await this.engine(), game.analysis, tasks, {
+        signal: this.abort.signal,
+        beforeEach: () => this.gate(),
+        onProgress: (done, total) => this.emit({ current: done / total }),
+      });
       await this.profile.putGame(game);
     }
 

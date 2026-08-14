@@ -11,7 +11,7 @@
 // Takes an `Analyser` rather than the Engine class, so tests can drive it with
 // a table of positions.
 
-import type { AnalysisEntry } from '../analysis/candidates.ts';
+import type { Alt, AnalysisEntry } from '../analysis/candidates.ts';
 import { povDiff, type Color, type EvalScore } from '../analysis/winningChances.ts';
 import { lineToSan, type ReplayStep } from '../deck/positions.ts';
 import type { EngineLine, Request } from './protocol.ts';
@@ -59,6 +59,15 @@ export interface AnalyseOptions {
 
 export const SWEEP_DEPTH = 12;
 export const DEEP_MOVETIME = 1000;
+/**
+ * The ranking search: how many alternatives, and how long they get. This is
+ * the number the difficulty gate is built on and the fan of arrows a solved
+ * position shows, so it is deliberately more generous than the eval searches
+ * either side of it — it is gathered once, in the background, and then it is
+ * what every showing of that position uses forever.
+ */
+export const RANK_LINES = 5;
+export const RANK_MOVETIME = 2000;
 
 /** Same test the finder applies, run early to decide what deserves pass 2. */
 const moved = (prev: EvalScore, curr: EvalScore): boolean =>
@@ -113,12 +122,14 @@ export async function analyseGame(
 
     const step = steps[i]!;
     if (opts.skipPly && (await opts.skipPly(i, step))) continue;
-    // Before the move: gives us `best` and the line to show. After it: the
-    // eval the mistake actually led to.
-    const before = await engine.analyse({ fen: step.fen, movetime });
+    // Before the move: the ranking, which gives us `best`, the line to show,
+    // and the alternatives a puzzle is judged against. After it: the eval the
+    // mistake actually led to.
+    const ranked = await rankPosition(engine, step.fen);
     await check();
     const after = await engine.analyse({ fen: step.after, movetime });
 
+    const before = ranked[0]!;
     // Safe to overwrite outright: i-1 is the other side's ply, so pass 2 never
     // wrote a variation there.
     analysis[i - 1] = toEntry(before.score);
@@ -130,11 +141,76 @@ export async function analyseGame(
     if (best && best !== step.uci) {
       entry.best = best;
       entry.variation = lineToSan(step.fen, before.pv.slice(0, 12)).join(' ');
+      entry.alts = toAlts(ranked);
       found++;
     }
     analysis[i] = entry;
   }
   return analysis;
+}
+
+/**
+ * The ranking search. Falls back to a single line for an `Analyser` that has
+ * no `analyseLines` — the test doubles, and nothing in the browser — so a
+ * position ranked that way holds one alternative rather than none.
+ */
+async function rankPosition(engine: Analyser, fen: string): Promise<EngineLine[]> {
+  if (engine.analyseLines)
+    return engine.analyseLines({ fen, movetime: RANK_MOVETIME, multiPv: RANK_LINES });
+  return [await engine.analyse({ fen, movetime: RANK_MOVETIME })];
+}
+
+const toAlts = (lines: readonly EngineLine[]): Alt[] =>
+  lines
+    .filter(l => l.pv[0])
+    .map(l => ({
+      uci: l.pv[0]!,
+      ...(l.score.mate !== undefined ? { mate: l.score.mate } : { eval: l.score.cp! }),
+    }));
+
+/** One position that needs ranking: where in the game, and what it looks like. */
+export interface RankTask {
+  /** 0-based index into `analysis`, i.e. the ply that was the mistake. */
+  index: number;
+  /** The position *before* the mistake — the one a puzzle hands out. */
+  fen: string;
+}
+
+/**
+ * Fill in `alts` for candidates that have none. That is every game lichess
+ * analysed for us — the export carries one variation per ply and there is no
+ * way to ask it for four more — and anything we analysed before the ranking
+ * existed.
+ *
+ * Mutates the entries in place, so the caller stores the game again; returns
+ * how many positions it ranked. This is the whole of the catch-up pass, and it
+ * is deliberately not a re-analysis: the sweep already happened, the candidates
+ * are already known, and only the ranking is missing.
+ */
+export async function rankCandidates(
+  engine: Analyser,
+  analysis: AnalysisEntry[],
+  tasks: readonly RankTask[],
+  opts: Pick<AnalyseOptions, 'signal' | 'beforeEach' | 'onProgress'> = {},
+): Promise<number> {
+  let done = 0;
+  for (const task of tasks) {
+    await opts.beforeEach?.();
+    if (opts.signal?.aborted) throw new Aborted('Analysis cancelled');
+    const entry = analysis[task.index];
+    if (!entry) continue;
+    try {
+      entry.alts = toAlts(await rankPosition(engine, task.fen));
+      done++;
+    } catch (e) {
+      if (e instanceof Aborted) throw e;
+      // A position the engine won't rank stays unranked, and the puzzle stays
+      // withheld. Better than a puzzle whose difficulty gate is a guess.
+      console.warn('no ranking for', task.fen, e);
+    }
+    opts.onProgress?.(done, tasks.length);
+  }
+  return done;
 }
 
 const toEntry = (score: EvalScore): AnalysisEntry =>

@@ -2,7 +2,7 @@
 // puzzle must not arrive in: consecutive positions from one game leak the game.
 // This turns them into standalone records and shuffles them apart.
 
-import type { Candidate } from '../analysis/candidates.ts';
+import type { Alt, Candidate } from '../analysis/candidates.ts';
 import type { Color, EvalScore } from '../analysis/winningChances.ts';
 import { lineToSan, type ReplayStep } from './positions.ts';
 
@@ -34,6 +34,15 @@ export interface Puzzle {
   prevEval: EvalScore;
   eval: EvalScore;
   judgment?: string;
+  /**
+   * The engine's best moves from `fen`, best first, gathered before this
+   * position was ever shown. `alts[0].uci` is `best`. The difficulty gate reads
+   * the rank of your move out of this and the eval test reads its score, so a
+   * solve on Medium or Hard asks the engine nothing at all — and the verdict
+   * is the same on every showing, which it would not be if it came from a
+   * fresh search each time.
+   */
+  alts: Alt[];
 }
 
 export function buildPuzzles(
@@ -64,6 +73,10 @@ export function buildPuzzles(
       prevEval: c.prevEval,
       eval: c.eval,
       ...(c.judgment ? { judgment: c.judgment } : {}),
+      // Derivation withholds a candidate with no ranking, so this is never
+      // empty in practice; defaulted rather than asserted because `buildPuzzles`
+      // is also what the tests drive directly.
+      alts: c.alts ?? [],
     });
   }
   return out;

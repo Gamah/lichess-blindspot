@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { Puzzle } from '../src/deck/build.ts';
-import { classify, judgeEval, Solve, TOP_LINES, withinTopLines } from '../src/solve/retro.ts';
+import { classify, judgeEval, judgeRanked, Solve, TOP_LINES, withinTopLines } from '../src/solve/retro.ts';
 
 // White to move, having played Ng5 in the game when Bc4 was the engine's move.
 const puzzle: Puzzle = {
@@ -16,6 +16,16 @@ const puzzle: Puzzle = {
   pv: ['Bc4'],
   prevEval: { cp: 20 },
   eval: { cp: -900 },
+  // The engine's five, best first, gathered before the position was shown.
+  // Bc4 is `best`, Nc3 is its third choice and roughly holds, a2a3 is its
+  // fifth and does not.
+  alts: [
+    { uci: 'f1c4', eval: 30 },
+    { uci: 'd2d4', eval: 25 },
+    { uci: 'b1c3', eval: 10 },
+    { uci: 'e1g1', eval: 5 },
+    { uci: 'a2a3', eval: -400 },
+  ],
 };
 
 test('the engine’s own move is accepted without asking the engine', () => {
@@ -88,27 +98,47 @@ test('viewing the solution counts as done, not as solved by hand', () => {
 
 test('easy asks no question about rank, so a move only has to hold the position', () => {
   assert.equal(TOP_LINES.easy, 0);
-  assert.ok(withinTopLines('a2a3', [], TOP_LINES.easy));
+  assert.ok(withinTopLines('a2a3', puzzle.alts, TOP_LINES.easy));
 });
 
 test('medium and hard are the same test with a different edge', () => {
-  const top = ['f1c4', 'd2d4', 'b1c3', 'f3g5', 'a2a3'];
-  assert.ok(withinTopLines('b1c3', top, TOP_LINES.medium));
-  assert.ok(!withinTopLines('b1c3', top, TOP_LINES.hard));
-  assert.ok(withinTopLines('d2d4', top, TOP_LINES.hard));
-  assert.ok(!withinTopLines('h2h3', top, TOP_LINES.medium));
+  assert.ok(withinTopLines('b1c3', puzzle.alts, TOP_LINES.medium));
+  assert.ok(!withinTopLines('b1c3', puzzle.alts, TOP_LINES.hard));
+  assert.ok(withinTopLines('d2d4', puzzle.alts, TOP_LINES.hard));
+  assert.ok(!withinTopLines('h2h3', puzzle.alts, TOP_LINES.medium));
 });
 
-test('a move outside the ranking fails whatever its eval would have been', () => {
-  const solve = new Solve(puzzle);
-  solve.play({ uci: 'b1c3', san: 'Nc3' });
-  // The eval says fine — it is the rank that refuses it, and with no score at
-  // all, because a move the engine did not rank never got one.
-  assert.equal(solve.onCeval(undefined, false), 'fail');
+test('the whole verdict comes off the puzzle, with no engine anywhere near it', () => {
+  // Third choice: inside medium's five, outside hard's two.
+  assert.deepEqual(judgeRanked(puzzle, 'b1c3', TOP_LINES.medium), { verdict: 'win', rank: 2 });
+  assert.deepEqual(judgeRanked(puzzle, 'b1c3', TOP_LINES.hard), { verdict: 'fail', rank: 2 });
 });
 
 test('inside the ranking, the eval still has to hold: both tests, not either', () => {
+  // Ranked fifth, and it drops the position — being on the list is not enough.
+  assert.deepEqual(judgeRanked(puzzle, 'a2a3', TOP_LINES.medium), { verdict: 'fail', rank: 4 });
+});
+
+test('an unranked move on Easy is the one case left that needs a search', () => {
+  assert.deepEqual(judgeRanked(puzzle, 'h2h3', TOP_LINES.easy), { verdict: 'outside', rank: -1 });
+  // ...and on the harder settings it needs nothing: unranked is the answer.
+  assert.deepEqual(judgeRanked(puzzle, 'h2h3', TOP_LINES.hard), { verdict: 'fail', rank: -1 });
+});
+
+test('Solve answers from the ranking, and only asks for a search when it cannot', () => {
+  const hard = new Solve(puzzle);
+  hard.play({ uci: 'h2h3', san: 'h3' });
+  assert.equal(hard.onRanked(TOP_LINES.hard), 'fail');
+
+  const easy = new Solve(puzzle);
+  easy.play({ uci: 'h2h3', san: 'h3' });
+  assert.equal(easy.onRanked(TOP_LINES.easy), 'eval', 'nothing stored says what h3 is worth');
+  assert.equal(easy.onCeval({ cp: 15 }), 'win');
+});
+
+test('the rank of the last attempt is kept, because the feedback line says it', () => {
   const solve = new Solve(puzzle);
   solve.play({ uci: 'b1c3', san: 'Nc3' });
-  assert.equal(solve.onCeval({ cp: -800 }, true), 'fail');
+  solve.onRanked(TOP_LINES.hard);
+  assert.equal(solve.rank, 2);
 });

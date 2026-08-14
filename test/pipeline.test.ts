@@ -25,6 +25,7 @@ const fakeStore = (): Store & { stored: ExportedGame[] } => {
     putGame: async game => {
       stored.push(game);
     },
+    games: async () => stored.slice(),
   };
 };
 
@@ -231,4 +232,90 @@ test('running out of games stops the asking for good', async () => {
   } finally {
     fetch.restore();
   }
+});
+
+// A game lichess analysed arrives with one variation per ply and no ranking, so
+// its positions are withheld until the engine has been round them. That pass is
+// the whole reason a stored game can go from "nothing to solve" to a full deck
+// without anything being downloaded again.
+test('stored games with no ranking are ranked before anything is fetched', async () => {
+  const moves = 'e4 e5 Nf3 Nc6 Ng5 Nf6 Nxf7 Kxf7';
+  const steps = replay(moves.split(' '));
+  const analysed: ExportedGame = {
+    id: 'bbb',
+    createdAt: 1000,
+    variant: 'standard',
+    players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+    moves,
+    // Exactly lichess' shape: a best move and a variation, and no `alts`.
+    analysis: [
+      { eval: 20 },
+      { eval: 15 },
+      { eval: 25 },
+      { eval: 20 },
+      { eval: -300, best: 'f1c4', variation: 'Bc4 Bc5' },
+      { eval: -310 },
+      { eval: -320 },
+      { eval: -330 },
+    ],
+  } as ExportedGame;
+
+  const asked: string[] = [];
+  const engine: Analyser = {
+    analyse: () => Promise.reject(new Error('the ranking pass must not sweep')),
+    analyseLines: (req: Request): Promise<EngineLine[]> => {
+      asked.push(req.fen);
+      return Promise.resolve(
+        ['f1c4', 'd2d4', 'b1c3'].map((uci, i) => ({
+          depth: 20,
+          score: { cp: 30 - i * 10 },
+          pv: [uci],
+          multiPv: i + 1,
+        })),
+      );
+    },
+  };
+
+  const store = fakeStore();
+  store.stored.push(analysed);
+  const { puzzles, handlers } = events();
+  const fetch = stubFetch(() => new Response('', { status: 429 }));
+  try {
+    // `now` is far enough back that the export gap blocks fetching outright,
+    // which is the point: the backlog is not a fetch and must not wait on one.
+    await new Pipeline(store, () => Promise.resolve(engine), handlers, () => 0).run();
+  } finally {
+    fetch.restore();
+  }
+
+  assert.deepEqual(asked, [steps[4]!.fen], 'the position before the mistake, once');
+  assert.deepEqual(
+    puzzles.map(p => p.id),
+    ['bbb:5'],
+    'and it comes out of the store as a puzzle in the same pass',
+  );
+  assert.deepEqual(puzzles[0]!.alts.map(a => a.uci), ['f1c4', 'd2d4', 'b1c3']);
+  assert.deepEqual(store.stored.at(-1)!.analysis![4]!.alts!.map(a => a.uci), [
+    'f1c4',
+    'd2d4',
+    'b1c3',
+  ]);
+});
+
+test('a game already ranked is not ranked again', async () => {
+  const engine: Analyser = {
+    analyse: () => Promise.reject(new Error('nothing to do')),
+    analyseLines: () => Promise.reject(new Error('nothing to do')),
+  };
+  const store = fakeStore();
+  const { handlers, errors } = events();
+  // An empty export, so the run gets all the way through without the engine
+  // being the thing that stopped it.
+  const fetch = stubFetch(() => new Response(''));
+  try {
+    await new Pipeline(store, () => Promise.resolve(engine), handlers, () => 0).run();
+  } finally {
+    fetch.restore();
+  }
+  assert.deepEqual(errors, [], 'a store with nothing owing gives the engine no reason to start');
 });
