@@ -39,7 +39,15 @@ export const forgetUsername = (username: string): void =>
     recentUsernames().filter(u => u.toLowerCase() !== username.toLowerCase()),
   );
 
+import { isDifficulty, type Difficulty } from '../solve/retro.ts';
+
 export interface Settings {
+  /**
+   * How strict the verdict on a move you invented is. Absent means never
+   * chosen — which is how someone who was here before the setting existed is
+   * told about it, so don't give it a value in `DEFAULT_SETTINGS`.
+   */
+  difficulty?: Difficulty;
   /**
    * Take at most this many positions from any one game; 0 for every one it
    * finds. This is the analysis budget dial as much as a taste dial: the sweep
@@ -62,6 +70,19 @@ export const settings = (): Settings => ({
   ...DEFAULT_SETTINGS,
   ...read<Partial<Settings>>(SETTINGS, {}),
 });
+
+/**
+ * The setting in force, with the default applied. Easy is the default because
+ * it is what the app did before there was a choice: a returning player who
+ * dismisses the notice without touching anything gets exactly what they had.
+ */
+export const difficulty = (): Difficulty => {
+  const chosen = settings().difficulty;
+  return isDifficulty(chosen) ? chosen : 'easy';
+};
+
+/** False for anyone who has never been asked — see `Settings.difficulty`. */
+export const difficultyChosen = (): boolean => isDifficulty(settings().difficulty);
 
 export const saveSettings = (patch: Partial<Settings>): Settings => {
   const next = { ...settings(), ...patch };

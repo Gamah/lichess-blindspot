@@ -13,6 +13,12 @@ export interface Request {
   depth?: number;
   /** Or search for this long, in ms. Used for the deep re-check. */
   movetime?: number;
+  /**
+   * Ask for this many alternative lines instead of one. Sent on every search,
+   * including the ordinary one-line kind, so the engine never carries a
+   * MultiPV left over from the last caller.
+   */
+  multiPv?: number;
 }
 
 export interface EngineLine {
@@ -21,6 +27,12 @@ export interface EngineLine {
   score: EvalScore;
   /** Principal variation, uci. */
   pv: string[];
+  /**
+   * Rank within a MultiPV search, 1-based and 1 for an ordinary one — so the
+   * engine's own ordering, best first. Optional because plenty of code
+   * constructs an EngineLine without caring.
+   */
+  multiPv?: number;
 }
 
 /**
@@ -34,10 +46,14 @@ export function parseInfo(line: string, turn: Color): EngineLine | undefined {
   let depth: number | undefined;
   let score: EvalScore | undefined;
   let pv: string[] | undefined;
+  let multiPv = 1;
   for (let i = 1; i < t.length; i++) {
     switch (t[i]) {
       case 'depth':
         depth = Number(t[++i]);
+        break;
+      case 'multipv':
+        multiPv = Number(t[++i]);
         break;
       case 'score': {
         const kind = t[++i];
@@ -54,7 +70,7 @@ export function parseInfo(line: string, turn: Color): EngineLine | undefined {
     }
   }
   if (depth === undefined || !score) return undefined;
-  return { depth, score: toWhite(score, turn), pv: pv ?? [] };
+  return { depth, score: toWhite(score, turn), pv: pv ?? [], multiPv };
 }
 
 /** `bestmove e2e4 ponder e7e5` -> `e2e4`. `bestmove (none)` -> undefined. */
@@ -144,6 +160,16 @@ export class UciSession {
 
   /** Analyse one position. Serialised: an engine is one search at a time. */
   analyse(req: Request): Promise<EngineLine> {
+    return this.analyseLines(req).then(lines => lines[0]!);
+  }
+
+  /**
+   * The engine's top `multiPv` moves for a position, best first — what the
+   * difficulty gate is measured against, and what the arrows on a solved
+   * position are drawn from. Always at least one line; the search rejects
+   * rather than returning none.
+   */
+  analyseLines(req: Request): Promise<EngineLine[]> {
     const run = () => this.search(req);
     const result = this.queue.then(run, run);
     // Keep the chain alive even when one request rejects.
@@ -160,13 +186,20 @@ export class UciSession {
     this.send('quit');
   }
 
-  private search(req: Request): Promise<EngineLine> {
+  private search(req: Request): Promise<EngineLine[]> {
     if (this.closed) return Promise.reject(new Error('Engine stopped'));
     const turn = fenTurn(req.fen);
     const limit = req.movetime !== undefined ? `movetime ${req.movetime}` : `depth ${req.depth ?? 12}`;
-    let best: EngineLine | undefined;
-    return this.exchange<EngineLine>(
+    const multiPv = Math.max(1, req.multiPv ?? 1);
+    // One deepest line per rank. A MultiPV search reprints all of them at each
+    // new depth, so the last of each is the one we want.
+    const best = new Map<number, EngineLine>();
+    return this.exchange<EngineLine[]>(
       () => {
+        // Set every time rather than only when it changes: this session is
+        // shared between the background pass and the solve loop, and a stale
+        // MultiPV would quietly slow the sweep down fivefold.
+        this.send(`setoption name MultiPV value ${multiPv}`);
         this.send(`position fen ${req.fen}`);
         this.send(`go ${limit}`);
       },
@@ -174,13 +207,22 @@ export class UciSession {
         const info = parseInfo(line, turn);
         // Keep the deepest scored line: the last `info` before `bestmove` is
         // often a bare depth report with no score at all.
-        if (info && (!best || info.depth >= best.depth)) best = info;
+        if (info) {
+          const rank = info.multiPv ?? 1;
+          const held = best.get(rank);
+          if (!held || info.depth >= held.depth) best.set(rank, info);
+        }
         if (!line.startsWith('bestmove')) return;
-        if (!best) return fail(new Error(`No evaluation for ${req.fen}`));
+        const lines = [...best.entries()].sort((a, b) => a[0] - b[0]).map(([, l]) => l);
+        const head = lines[0];
+        if (!head) return fail(new Error(`No evaluation for ${req.fen}`));
         const bestmove = parseBestmove(line);
         // Trust `bestmove` over the last pv we saw: they agree except when the
-        // search was cut off part-way through a line.
-        done(bestmove && best.pv[0] !== bestmove ? { ...best, pv: [bestmove] } : best);
+        // search was cut off part-way through a line. Only for a single-line
+        // search — under MultiPV, overwriting the first pv with `bestmove`
+        // would put a move in rank 1 that the ranking did not agree with.
+        if (multiPv === 1 && bestmove && head.pv[0] !== bestmove) lines[0] = { ...head, pv: [bestmove] };
+        done(lines);
       },
     );
   }

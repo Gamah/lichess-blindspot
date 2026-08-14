@@ -9,6 +9,7 @@ test('an info line becomes a white-POV evaluation', () => {
     depth: 18,
     score: { cp: 35 },
     pv: ['e2e4', 'e7e5', 'g1f3'],
+    multiPv: 1,
   });
 });
 
@@ -28,7 +29,12 @@ test('bounds and score-less lines are not evaluations', () => {
 
 test('a mated position still gives a score, with no pv', () => {
   const line = parseInfo('info depth 0 score mate 0', 'black');
-  assert.deepEqual(line, { depth: 0, score: { mate: -0 }, pv: [] });
+  assert.deepEqual(line, { depth: 0, score: { mate: -0 }, pv: [], multiPv: 1 });
+});
+
+test('a line with no multipv field is rank 1 — an ordinary search', () => {
+  assert.equal(parseInfo('info depth 12 score cp 5 pv e2e4', 'white')!.multiPv, 1);
+  assert.equal(parseInfo('info depth 12 multipv 3 score cp 5 pv d2d4', 'white')!.multiPv, 3);
 });
 
 test('bestmove', () => {
@@ -65,4 +71,70 @@ test('an option change waits for the search in front of it', async () => {
   await search;
   await option;
   assert.deepEqual(sent.slice(-2), ['setoption name Threads value 4', 'isready']);
+});
+
+test('a MultiPV search returns the ranks in the engine’s order, deepest of each', async () => {
+  const sent: string[] = [];
+  const session = new UciSession(cmd => {
+    sent.push(cmd);
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      // Two depths, arriving in the order Stockfish prints them: every rank at
+      // depth 8, then every rank at depth 9, and rank 2 out of order to prove
+      // the sort is on the rank and not on arrival.
+      session.receive('info depth 8 multipv 1 score cp 30 pv e2e4 e7e5');
+      session.receive('info depth 8 multipv 2 score cp 25 pv d2d4 d7d5');
+      session.receive('info depth 9 multipv 2 score cp 22 pv d2d4 g8f6');
+      session.receive('info depth 9 multipv 1 score cp 33 pv e2e4 c7c5');
+      session.receive('info depth 9 multipv 3 score cp 10 pv g1f3 d7d5');
+      session.receive('bestmove e2e4');
+    });
+  });
+
+  const lines = await session.analyseLines({ fen: 'x w', movetime: 50, multiPv: 3 });
+  assert.deepEqual(
+    lines.map(l => [l.multiPv, l.depth, l.pv[0]]),
+    [
+      [1, 9, 'e2e4'],
+      [2, 9, 'd2d4'],
+      [3, 9, 'g1f3'],
+    ],
+  );
+  assert.ok(sent.includes('setoption name MultiPV value 3'));
+});
+
+test('MultiPV is set on every search, so a stale one cannot slow the sweep down', async () => {
+  const sent: string[] = [];
+  const session = new UciSession(cmd => {
+    sent.push(cmd);
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      session.receive('info depth 12 score cp 5 pv e2e4');
+      session.receive('bestmove e2e4');
+    });
+  });
+  await session.analyse({ fen: 'x w', depth: 12 });
+  assert.deepEqual(sent, ['setoption name MultiPV value 1', 'position fen x w', 'go depth 12']);
+});
+
+test('bestmove overrides a cut-off pv on a single line, but never reorders a ranking', async () => {
+  const single = new UciSession(cmd => {
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      single.receive('info depth 12 score cp 5 pv e2e4 e7e5');
+      single.receive('bestmove d2d4');
+    });
+  });
+  assert.deepEqual((await single.analyse({ fen: 'x w', depth: 12 })).pv, ['d2d4']);
+
+  const multi = new UciSession(cmd => {
+    if (!cmd.startsWith('go ')) return;
+    queueMicrotask(() => {
+      multi.receive('info depth 12 multipv 1 score cp 5 pv e2e4 e7e5');
+      multi.receive('info depth 12 multipv 2 score cp 3 pv d2d4 d7d5');
+      multi.receive('bestmove d2d4');
+    });
+  });
+  const lines = await multi.analyseLines({ fen: 'x w', depth: 12, multiPv: 2 });
+  assert.deepEqual(lines.map(l => l.pv[0]), ['e2e4', 'd2d4']);
 });

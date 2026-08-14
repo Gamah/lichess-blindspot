@@ -107,6 +107,10 @@ export class Engine {
     return this.session.analyse(req);
   }
 
+  analyseLines(req: Request): Promise<EngineLine[]> {
+    return this.session.analyseLines(req);
+  }
+
   /** Applies to the next search; no restart, no re-download. */
   setThreads(threads: number): Promise<void> {
     return this.session.setOption('Threads', threads);

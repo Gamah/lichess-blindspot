@@ -6,10 +6,27 @@
 
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
+import type { DrawBrushes, DrawShape } from '@lichess-org/chessground/draw';
 import type { Key } from '@lichess-org/chessground/types';
 
 import { applyUci, dests, isCheck } from '../deck/positions.ts';
 import type { Color } from '../analysis/winningChances.ts';
+
+/**
+ * One brush per rank, the same blue fading out as it goes down the list —
+ * lila's paleBlue is `#003088` at 0.4, and this is that idea spread over five
+ * arrows so the ordering is visible without reading the numbers.
+ *
+ * Chessground has no per-shape opacity (`modifiers` is lineWidth and hilite
+ * only), so a fade has to be a brush per step.
+ */
+const RANK_BRUSHES: Record<string, { key: string; color: string; opacity: number; lineWidth: number }> =
+  Object.fromEntries(
+    [0.85, 0.65, 0.5, 0.38, 0.28].map((opacity, i) => [
+      `rank${i + 1}`,
+      { key: `r${i + 1}`, color: '#003088', opacity, lineWidth: 12 - i },
+    ]),
+  );
 
 export interface PlayedMove {
   uci: string;
@@ -36,7 +53,10 @@ export class Board {
       animation: { enabled: true, duration: 200 },
       movable: { free: false, showDests: true, events: { after: (o, d) => void this.afterMove(o, d) } },
       draggable: { showGhost: true },
-      drawable: { enabled: true },
+      // chessground deep-merges its config, so naming a few extra brushes adds
+      // them to the defaults rather than replacing the set. The cast is for
+      // that: the type wants the whole set, the merge does not.
+      drawable: { enabled: true, brushes: RANK_BRUSHES as unknown as DrawBrushes },
     });
   }
 
@@ -86,7 +106,27 @@ export class Board {
    * position, once solving it is over and the context is allowed back.
    */
   drawMove(uci: string, brush = 'red'): void {
-    this.cg.setShapes([{ orig: uci.slice(0, 2) as Key, dest: uci.slice(2, 4) as Key, brush }]);
+    this.cg.setShapes([arrow(uci, brush)]);
+  }
+
+  /**
+   * The reveal: go back to the position that was set as the puzzle — the board
+   * is showing whatever the last move played left behind — and put everything
+   * about it on at once. `top` is the engine's own ordering, best first, drawn
+   * numbered and fading; `played` is what the game did, in red.
+   *
+   * Numbering rather than colour alone because five shades of one blue is a
+   * ranking nobody can read off the board, and because the numbers are what
+   * make "you found its third choice" a sentence.
+   */
+  reveal(fen: string, orientation: Color, top: readonly string[], played?: string): void {
+    this.set(fen, orientation, false);
+    const shapes: DrawShape[] = top
+      .slice(0, 5)
+      .map((uci, i) => ({ ...arrow(uci, `rank${i + 1}`), label: { text: String(i + 1) } }));
+    // Last, so it draws over the fan of blue rather than under it.
+    if (played) shapes.push(arrow(played, 'red'));
+    this.cg.setShapes(shapes);
   }
 
   /** Rewind to the position we handed out, after a wrong move. */
@@ -177,7 +217,13 @@ export class Board {
   }
 }
 
-const PIECE_NAMES = { q: 'queen', r: 'rook', b: 'bishop', n: 'knight' } as const;
+const arrow = (uci: string, brush: string): DrawShape => ({
+  orig: uci.slice(0, 2) as Key,
+  dest: uci.slice(2, 4) as Key,
+  brush,
+});
+
+const PIECE_NAMES ={ q: 'queen', r: 'rook', b: 'bishop', n: 'knight' } as const;
 
 const turnOf = (fen: string): Color => (fen.split(' ')[1] === 'b' ? 'black' : 'white');
 

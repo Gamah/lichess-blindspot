@@ -11,8 +11,16 @@ import type { Puzzle } from '../deck/build.ts';
 import { puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
+import type { EngineLine } from '../engine/protocol.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import { Solve } from '../solve/retro.ts';
+import {
+  DIFFICULTIES,
+  SHOWN_LINES,
+  Solve,
+  TOP_LINES,
+  withinTopLines,
+  type Difficulty,
+} from '../solve/retro.ts';
 import {
   mb,
   Profile,
@@ -22,6 +30,8 @@ import {
   type SolveRecord,
 } from '../storage/db.ts';
 import {
+  difficulty,
+  difficultyChosen,
   forgetPrefs,
   recentUsernames,
   rememberUsername,
@@ -39,6 +49,13 @@ const REFILL_AT = 5;
 /** How long the engine gets to judge a move the player invented. */
 const JUDGE_MOVETIME = 1000;
 /**
+ * And to rank the position's moves, for the difficulty gate and the arrows on
+ * a solved position. Longer than the single-line judgement because the same
+ * time spread over five lines buys each of them less depth, and the ranking is
+ * the thing being shown.
+ */
+const RANK_MOVETIME = 1500;
+/**
  * After lichess has said "busy" we hold the front door too. The pipeline backs
  * itself off, but typing the name again builds a fresh one, so the wait has to
  * live out here as well or the retry button becomes a way round it.
@@ -52,6 +69,12 @@ export class App {
   private board: Board | undefined;
   private solve: Solve | undefined;
   private attempts = 0;
+  /**
+   * The engine's top moves for the position on screen, memoised for as long as
+   * it is on screen: the difficulty gate asks for them on every invented move,
+   * and the reveal draws them, and that is one search rather than four.
+   */
+  private ranking: { puzzleId: string; lines: EngineLine[] } | undefined;
   private enginePromise: Promise<Analyser> | undefined;
   private booted: Engine | undefined;
   private engineFailed: string | undefined;
@@ -278,6 +301,12 @@ export class App {
       </div>
 
       <div class="setting">
+        <label for="difficulty">Difficulty</label>
+        <select id="difficulty">${difficultyOptions()}</select>
+        <p class="hint">${DIFFICULTY_HINT}</p>
+      </div>
+
+      <div class="setting">
         <label for="max-per-game">Positions per game</label>
         <select id="max-per-game">${options}</select>
         <p class="hint">Finding mistakes is cheap; confirming one costs a pair of second-long
@@ -328,6 +357,13 @@ export class App {
       if (el) el.textContent = text;
     };
     (panel.querySelector('#close') as HTMLButtonElement).onclick = () => (panel.hidden = true);
+    (panel.querySelector('#difficulty') as HTMLSelectElement).onchange = e => {
+      const value = (e.target as HTMLSelectElement).value as Difficulty;
+      saveSettings({ difficulty: value });
+      // Nothing to rebuild: difficulty is the verdict on a move, not which
+      // positions the deck holds, so it takes effect on the next move tried.
+      status(`${DIFFICULTY_NAMES[value]}. ${DIFFICULTY_SUMMARY[value]}`);
+    };
     (panel.querySelector('#max-per-game') as HTMLSelectElement).onchange = async e => {
       const value = Number((e.target as HTMLSelectElement).value);
       saveSettings({ maxPerGame: value });
@@ -388,6 +424,17 @@ export class App {
     // written down. Say so and start again.
     if (await profile.stale()) return this.renderReset(profile);
     void profile.stamp();
+
+    // Same shape of gate, for a change that costs nothing to make: a setting
+    // that did not exist when this store was written. Someone with games here
+    // has been solving under the old rule, so it is offered once rather than
+    // waiting to be found in Settings. A store with nothing in it belongs to
+    // someone who has no old rule to be surprised by, so it is stamped with
+    // the default instead and never asked.
+    if (!difficultyChosen()) {
+      if (await profile.hasGames()) return this.renderDifficultyNotice(profile);
+      saveSettings({ difficulty: 'easy' });
+    }
 
     await this.buildDeck();
 
@@ -455,6 +502,54 @@ export class App {
     (this.root.querySelector('form.start') as HTMLFormElement).addEventListener('submit', e => {
       e.preventDefault();
       void this.doReset(profile);
+    });
+  }
+
+  /**
+   * The other kind of one-time screen: nothing is deleted and nothing has to
+   * be, but the rule that decides whether you found the move has grown two
+   * stricter settings, and picking one is a choice the person should make
+   * rather than one made for them by a default. Easy is the old behaviour, so
+   * the safe answer is also the one that changes nothing.
+   */
+  private renderDifficultyNotice(profile: Profile): void {
+    clearInterval(this.countdown);
+    this.root.innerHTML = `
+      <main class="landing notice">
+        <h1>There is a difficulty setting now</h1>
+        <p>Until now a move you invented was accepted whenever it did not throw the position
+          away — which in most positions is several different moves. That is still there, it is
+          called <strong>Easy</strong>, and choosing it changes nothing at all.</p>
+        <p>The other two ask the engine a narrower question: not "is this move alright" but "is
+          this one of the moves I would name". <strong>Medium</strong> wants your move inside the
+          engine's top 5 from that position, <strong>Hard</strong> inside its top 2. The engine's
+          own move and a move that mates are accepted whatever you pick.</p>
+        <p class="warn">Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second
+          search in this browser. That is enough to be confident about the best move or two and
+          not much more: a deeper search, or lichess' own analysis, will sometimes put a different
+          move third. Hard is strict about something the engine is sure of; Medium's top 5 is
+          wide enough that the disagreement rarely reaches its edge. Neither is a verdict on your
+          move from on high.</p>
+        <p>Whatever you pick, a solved position now shows the engine's top five as numbered blue
+          arrows, and it can be changed at any time in Settings. Your games, analysis and solving
+          history are untouched — this is a setting, not a change to what is stored.</p>
+        <div class="choices">
+          ${DIFFICULTIES.map(
+            d => `<button data-difficulty="${d}">${DIFFICULTY_NAMES[d]}${
+              d === 'easy' ? ' — as before' : ` — top ${TOP_LINES[d]}`
+            }</button>`,
+          ).join('')}
+        </div>
+      </main>
+      ${footer()}`;
+    (this.root.querySelector('.choices') as HTMLElement).addEventListener('click', e => {
+      const chosen = (e.target as HTMLElement).closest('button')?.dataset['difficulty'];
+      if (!chosen) return;
+      saveSettings({ difficulty: chosen as Difficulty });
+      // Back through the front door, like the reset does: this time the gate
+      // above finds a choice recorded and falls through to an ordinary load.
+      this.profile = undefined;
+      void this.begin(profile.username);
     });
   }
 
@@ -545,11 +640,11 @@ export class App {
     const verdict = solve.play(move);
     if (verdict === 'eval') {
       this.setFeedback(`<strong>Checking ${escape(move.san)}…</strong>`);
-      const judged = await this.judge(move);
+      const judged = await this.judge(solve, move);
       // With no engine there is no verdict to give, so only the move it would
       // have played can be accepted, and the note says as much.
-      if (judged.score) solve.onCeval(judged.score);
-      else solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
+      if (judged.engineless) solve.feedback = move.uci === solve.puzzle.best ? 'win' : 'fail';
+      else solve.onCeval(judged.score, judged.ranked);
       this.afterVerdict(solve.feedback === 'win', move, judged.note);
     } else {
       this.afterVerdict(verdict === 'win', move);
@@ -575,17 +670,89 @@ export class App {
   /**
    * The 'eval' branch of retroCtrl: the player found a move that is neither the
    * engine's nor the one from the game, so it has to be judged on its merits.
+   *
+   * On Easy that is lila's question and lila's search — one line, from the
+   * position the move led to. On Medium and Hard the move must additionally be
+   * one of the engine's own top few, so the search is a MultiPV one from the
+   * position *before* the move, and it answers both questions at once: a move
+   * inside the ranking comes with the score of its line, and a move outside it
+   * is refused without a second search.
    */
-  private async judge(move: PlayedMove): Promise<{ score?: { cp?: number; mate?: number }; note?: string }> {
+  private async judge(
+    solve: Solve,
+    move: PlayedMove,
+  ): Promise<{
+    score?: { cp?: number; mate?: number };
+    ranked?: boolean;
+    note?: string;
+    engineless?: boolean;
+  }> {
+    const top = TOP_LINES[difficulty()];
     this.pipeline?.pause();
     try {
       const engine = await this.engine();
-      const line = await engine.analyse({ fen: move.after, movetime: JUDGE_MOVETIME });
-      return { score: line.score };
+      if (!top) {
+        const line = await engine.analyse({ fen: move.after, movetime: JUDGE_MOVETIME });
+        return { score: line.score, ranked: true };
+      }
+      const lines = await this.rankPosition(solve.puzzle, engine);
+      const ucis = lines.map(l => l.pv[0] ?? '');
+      const rank = ucis.indexOf(move.uci);
+      if (!withinTopLines(move.uci, ucis, top))
+        return {
+          ranked: false,
+          note:
+            rank < 0
+              ? `The engine does not have it in its top ${lines.length}.`
+              : `The engine has it ${ordinal(rank + 1)}, and this setting asks for its top ${top}.`,
+        };
+      // The score of the line starting with this move is the eval after it —
+      // the same number the one-line search would have gone and found.
+      return { score: lines[rank]!.score, ranked: true };
     } catch {
       return {
+        engineless: true,
         note: 'The engine is unavailable here, so only its own move can be accepted.',
       };
+    } finally {
+      this.pipeline?.resume();
+    }
+  }
+
+  /**
+   * The engine's best moves for a position, best first, memoised for as long
+   * as that position is the one on screen. Throws like any other search, and
+   * the callers treat that as "no engine".
+   */
+  private async rankPosition(puzzle: Puzzle, engine: Analyser): Promise<EngineLine[]> {
+    // Memoised on the position, not the attempt: three tries at one puzzle on
+    // Hard is one search, and the reveal that follows re-uses the same one.
+    if (this.ranking?.puzzleId === puzzle.id) return this.ranking.lines;
+    if (!engine.analyseLines) throw new EngineUnavailable('This engine cannot rank moves.');
+    const lines = await engine.analyseLines({
+      fen: puzzle.fen,
+      movetime: RANK_MOVETIME,
+      multiPv: SHOWN_LINES,
+    });
+    this.ranking = { puzzleId: puzzle.id, lines };
+    return lines;
+  }
+
+  /**
+   * The ranking for the position just solved, for the arrows. Already in hand
+   * whenever the difficulty gate ran; otherwise it is one search, and worth it
+   * — this is the only moment the alternatives can be shown without being the
+   * answer.
+   */
+  private async rankingFor(puzzle: Puzzle): Promise<string[]> {
+    this.pipeline?.pause();
+    try {
+      const lines = await this.rankPosition(puzzle, await this.engine());
+      return lines.map(l => l.pv[0] ?? '').filter(Boolean);
+    } catch {
+      // No engine, or it went away. The reveal still has the played move and
+      // the line from the stored analysis; it just has no fan of alternatives.
+      return [];
     } finally {
       this.pipeline?.resume();
     }
@@ -595,9 +762,10 @@ export class App {
     const solve = this.solve;
     if (!solve || !this.profile) return;
     this.board?.freeze();
-    // Finding it is the moment the context comes back, so show what the game
-    // did instead. Red, and only once the answer can no longer be a hint.
-    if (result === 'win') this.board?.drawMove(solve.puzzle.played.uci);
+    // The position back as it was handed out, with what the game did on it in
+    // red. Immediately, because the ranking below can take a search and the
+    // board should not sit on the move that ended the solve while it runs.
+    this.board?.reveal(solve.puzzle.fen, solve.puzzle.pov, [], solve.puzzle.played.uci);
     this.deck.markSolved([solve.puzzle.id]);
     await this.profile.recordSolve({
       puzzleId: solve.puzzle.id,
@@ -608,6 +776,17 @@ export class App {
     await this.renderReveal(solve.puzzle);
     this.toggleNext(true);
     this.renderCounters();
+    // Then the engine's top few over the top of it, numbered and fading. Last,
+    // because it can take a search — a puzzle moved on from in the meantime
+    // must not have arrows drawn over it.
+    const top = await this.rankingFor(solve.puzzle);
+    if (this.solve === solve && top.length) {
+      this.board?.reveal(solve.puzzle.fen, solve.puzzle.pov, top, solve.puzzle.played.uci);
+      this.appendReveal(`<p class="line dim">Blue arrows are the engine's top ${top.length},
+        numbered best first, from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second search — a deeper
+        one can order them differently, and often does past the first two. Red is the move the
+        game played.</p>`);
+    }
     if (this.deck.unsolvedCount() < REFILL_AT) void this.refill();
   }
 
@@ -616,8 +795,11 @@ export class App {
     if (!solve || solve.isDone()) return;
     solve.viewSolution();
     this.setFeedback(`<strong>${escape(solve.puzzle.pv.join(' '))}</strong>`);
-    await this.finish('view');
+    // The answer played out first, then `finish` puts the position back and
+    // draws the ranking on it: an arrow fan over a board that has moved on is
+    // nonsense.
     await this.board?.playLine([solve.puzzle.best], solve.puzzle.fen);
+    await this.finish('view');
   }
 
   private skip(): void {
@@ -737,6 +919,12 @@ export class App {
     if (el) el.innerHTML = html;
   }
 
+  /** For the parts of the reveal that arrive after a search. */
+  private appendReveal(html: string): void {
+    const el = this.root.querySelector('#reveal');
+    if (el) el.insertAdjacentHTML('beforeend', html);
+  }
+
   private toggleNext(show: boolean): void {
     const next = this.root.querySelector('#next') as HTMLButtonElement | null;
     const solution = this.root.querySelector('#solution') as HTMLButtonElement | null;
@@ -754,6 +942,7 @@ export class App {
     el.innerHTML = `
       <span>${this.deck.solvedCount()} solved</span>
       <span>${this.deck.unsolvedCount()} waiting</span>
+      <span class="dim">${DIFFICULTY_NAMES[difficulty()]}</span>
       ${analysing ? `<span class="working">analysing ${p.gamesDone + 1}…</span>` : ''}`;
   }
 }
@@ -762,6 +951,44 @@ export class App {
 
 const escape = (s: string): string =>
   s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+const DIFFICULTY_NAMES: Record<Difficulty, string> = {
+  easy: 'Easy',
+  medium: 'Medium',
+  hard: 'Hard',
+};
+
+/** One line each, used in the panel status and on the notice. */
+const DIFFICULTY_SUMMARY: Record<Difficulty, string> = {
+  easy: 'Any move that does not throw the position away is accepted.',
+  medium: 'A move must also be one of the engine’s top 5 from that position.',
+  hard: 'A move must also be one of the engine’s top 2 from that position.',
+};
+
+const DIFFICULTY_HINT = `What counts as finding it. <strong>Easy</strong> accepts any move that
+  does not throw the position away — several moves usually qualify, and that is what this app
+  did before the setting existed. <strong>Medium</strong> and <strong>Hard</strong> also require
+  the move to be one the engine itself would name: inside its top 5, or its top 2. The move the
+  engine actually plays and a move that mates always count, whatever the setting.
+  <br>
+  Those rankings come from a ${(RANK_MOVETIME / 1000).toFixed(1)}-second search on this device,
+  not from a deep one: past the first move or two the order is genuinely uncertain, and a longer
+  search — or lichess' own analysis — will sometimes disagree about what the third-best move is.
+  Hard is the honest setting for that reason; Medium's top 5 is wide enough that the wobble
+  rarely reaches it. Takes effect on the next move you try; the deck does not change.`;
+
+function difficultyOptions(): string {
+  const chosen = difficulty();
+  return DIFFICULTIES.map(
+    d =>
+      `<option value="${d}"${d === chosen ? ' selected' : ''}>${DIFFICULTY_NAMES[d]}${
+        d === 'easy' ? '' : ` — top ${TOP_LINES[d]}`
+      }</option>`,
+  ).join('');
+}
+
+const ordinal = (n: number): string =>
+  n === 1 ? 'first' : n === 2 ? 'second' : n === 3 ? 'third' : n === 4 ? 'fourth' : `${n}th`;
 
 /** 0 means "decide for me", which is what most people want and what we default to. */
 const threadSetting = (): number => settings().threads || Engine.defaultThreads();

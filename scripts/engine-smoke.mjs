@@ -92,6 +92,45 @@ for (const [fen, limit, ok] of cases) {
   );
 }
 
+// --- MultiPV, which the difficulty gate and the reveal arrows are built on ---
+
+const check = (label, ok, detail = '') => {
+  if (!ok) failed++;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? `  ${detail}` : ''}`);
+};
+
+const OPENING = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const ranked = await session.analyseLines({ fen: OPENING, movetime: 1500, multiPv: 5 });
+check('multipv 5 gives five lines', ranked.length === 5, `${ranked.length}`);
+check(
+  'ranks arrive 1..5 in order',
+  ranked.every((l, i) => l.multiPv === i + 1),
+  ranked.map(l => l.multiPv).join(','),
+);
+check(
+  'five different first moves',
+  new Set(ranked.map(l => l.pv[0])).size === ranked.length,
+  ranked.map(l => l.pv[0]).join(' '),
+);
+// White to move, so the engine's own ordering is descending in White's POV —
+// which is also the check that normalisation did not scramble the ranking.
+check(
+  'scores descend with the rank',
+  ranked.every((l, i) => i === 0 || (l.score.cp ?? 0) <= (ranked[i - 1].score.cp ?? 0)),
+  ranked.map(l => l.score.cp).join(' '),
+);
+
+// One legal move (Kxb2), so the engine cannot produce five lines and must not
+// pretend to: the gate reads "not in the top n" off the length of this list.
+const FORCED = 'k7/8/8/8/8/8/1q6/K7 w - - 0 1';
+const forced = await session.analyseLines({ fen: FORCED, movetime: 300, multiPv: 5 });
+check('a forced position gives one line', forced.length === 1, `${forced.length} ${forced[0]?.pv[0]}`);
+
+// And the option does not stick: the background sweep runs single-line right
+// after a solve, and five lines would make it five times slower.
+const after = await session.analyse({ fen: OPENING, depth: 10 });
+check('an ordinary search after one is still single-line', (after.multiPv ?? 1) === 1);
+
 session.close();
 console.log(failed ? `${failed} case(s) failed` : 'all cases ok');
 process.exit(failed ? 1 : 0);

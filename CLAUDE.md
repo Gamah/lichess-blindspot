@@ -179,6 +179,56 @@ Thresholds that are load-bearing and must not drift silently:
   curr is not mate
 - accept an alternative move: `povDiff(pov, yourEval, prevEval) > -0.04`
 
+## Difficulty
+
+**Ours, not lila's — lila has only the eval test.** `TOP_LINES` in
+`src/solve/retro.ts`: easy `0`, medium `5`, hard `2`. It is a *second* test, not
+a replacement: on medium and hard a move must pass the -0.04 eval test **and**
+be inside the top n of a MultiPV search of the puzzle position. Being ranked
+fifth is no defence in a position where only two moves hold.
+
+- Easy is the behaviour that predates the setting, and is the default, so a
+  returning player who picks it is where they were.
+- `classify` short-circuits first, so the engine's own move and a mate are
+  accepted at every setting, and the move played in the game is refused at
+  every setting. The gate only ever judges an invented move.
+- The ranking is one `analyseLines` call at `RANK_MOVETIME` (1.5 s, MultiPV 5),
+  memoised per puzzle in `App.ranking` — three attempts on one position is one
+  search, and the reveal re-uses it. **That is not a deep analysis**, and the
+  copy in Settings and on the notice says so: it settles the best move or two
+  and little more, so a longer search or lichess' own will sometimes disagree
+  about what is third. Don't quietly present the order as authoritative.
+- On medium and hard the MultiPV search replaces the one-line judge search
+  rather than joining it: a move inside the ranking is scored by its own line,
+  a move outside it is refused without a second search. So the cost is the same
+  order as Easy, not double.
+- Easy still pays for the ranking once per *solved* position, for the arrows.
+
+**MultiPV is sent on every search**, `analyse` included, because one session is
+shared between the background sweep and the solve loop and a MultiPV left at 5
+would make the sweep about five times slower. Verified against the real engine
+by `npm run engine-smoke`, which checks the five ranks come back in order, with
+distinct first moves and descending White-POV scores, that a position with one
+legal move yields one line, and that the next ordinary search is single-line.
+
+The reveal draws them: `Board.reveal` puts the position back as it was handed
+out, the engine's top five as numbered arrows fading through the `rank1`..
+`rank5` brushes, and the game's move in red over the top. Numbered because five
+shades of one blue is not a ranking anyone can read, and chessground has no
+per-shape opacity — a fade has to be a brush per step, merged into the defaults
+by its deep-merging config.
+
+**How an existing user is told a setting exists.** The same shape as the schema
+reset, and the only other thing in the app that gates the front door:
+`Settings.difficulty` is **absent** until chosen, and `App.begin` asks
+`profile.hasGames()`. Games present and no choice recorded means someone who
+has been solving under the old rule, and they get `renderDifficultyNotice`
+once. An *empty* store is a first visit — nothing to be surprised by — so the
+default is written silently and the notice never appears. Without that stamp a
+new player would meet the notice on their second visit, announcing a change
+that never happened to them. Copy that trick if another setting changes a
+verdict; don't copy it for a setting that only changes taste.
+
 ## Browsers that refuse storage
 
 Firefox with cookies blocked for a site throws `SecurityError: The operation is
@@ -204,8 +254,12 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 
 - IndexedDB via `idb-keyval`, one store per username. Four keys and no others:
   `game:<id>`, `solve:<gameId>:<ply>`, `meta` (the paging cursor) and `schema`.
-- localStorage only for tiny prefs (last username, board theme). It is a
-  separate, fixed ~5 MiB box, not a slice of the IndexedDB quota.
+- localStorage only for tiny prefs (last username, positions per game, threads,
+  difficulty). It is a separate, fixed ~5 MiB box, not a slice of the IndexedDB
+  quota. Prefs are per browser, not per username: choosing a difficulty once
+  covers every profile, which is why the notice is not shown again after a
+  switch. A schema reset takes them with it, so someone who resets comes back
+  on Easy without being asked — the reset copy already promises that.
 - Call `navigator.storage.persist()` once, or the browser LRU-evicts solve
   history under disk pressure.
 

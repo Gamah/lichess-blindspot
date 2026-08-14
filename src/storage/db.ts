@@ -127,6 +127,15 @@ export class Profile {
     }, false);
 
   /**
+   * True when this store already holds games — someone who has been here
+   * before. The same shape of question as `stale()`, and asked for the same
+   * reason: a change only has to be announced to the people it changes
+   * something for. A first visit is told nothing and gets the defaults.
+   */
+  hasGames = (): Promise<boolean> =>
+    this.use(async store => (await entries(store)).some(([k]) => isPrefixed(GAME)(k)), false);
+
+  /**
    * Everything for this username, gone, and the current version stamped on the
    * empty store.
    *

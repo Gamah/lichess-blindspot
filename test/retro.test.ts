@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { Puzzle } from '../src/deck/build.ts';
-import { classify, judgeEval, Solve } from '../src/solve/retro.ts';
+import { classify, judgeEval, Solve, TOP_LINES, withinTopLines } from '../src/solve/retro.ts';
 
 // White to move, having played Ng5 in the game when Bc4 was the engine's move.
 const puzzle: Puzzle = {
@@ -82,4 +82,33 @@ test('viewing the solution counts as done, not as solved by hand', () => {
   assert.equal(solve.feedback, 'view');
   assert.ok(solve.isDone());
   assert.ok(!solve.isSolving());
+});
+
+// --- the difficulty gate ----------------------------------------------------
+
+test('easy asks no question about rank, so a move only has to hold the position', () => {
+  assert.equal(TOP_LINES.easy, 0);
+  assert.ok(withinTopLines('a2a3', [], TOP_LINES.easy));
+});
+
+test('medium and hard are the same test with a different edge', () => {
+  const top = ['f1c4', 'd2d4', 'b1c3', 'f3g5', 'a2a3'];
+  assert.ok(withinTopLines('b1c3', top, TOP_LINES.medium));
+  assert.ok(!withinTopLines('b1c3', top, TOP_LINES.hard));
+  assert.ok(withinTopLines('d2d4', top, TOP_LINES.hard));
+  assert.ok(!withinTopLines('h2h3', top, TOP_LINES.medium));
+});
+
+test('a move outside the ranking fails whatever its eval would have been', () => {
+  const solve = new Solve(puzzle);
+  solve.play({ uci: 'b1c3', san: 'Nc3' });
+  // The eval says fine — it is the rank that refuses it, and with no score at
+  // all, because a move the engine did not rank never got one.
+  assert.equal(solve.onCeval(undefined, false), 'fail');
+});
+
+test('inside the ranking, the eval still has to hold: both tests, not either', () => {
+  const solve = new Solve(puzzle);
+  solve.play({ uci: 'b1c3', san: 'Nc3' });
+  assert.equal(solve.onCeval({ cp: -800 }, true), 'fail');
 });

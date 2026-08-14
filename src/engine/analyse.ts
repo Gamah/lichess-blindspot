@@ -18,6 +18,12 @@ import type { EngineLine, Request } from './protocol.ts';
 
 export interface Analyser {
   analyse(req: Request): Promise<EngineLine>;
+  /**
+   * The top `req.multiPv` moves, best first. Optional so a test double can be
+   * a table of positions and nothing else; the solve loop degrades to the
+   * one-line judgement when it isn't there.
+   */
+  analyseLines?(req: Request): Promise<EngineLine[]>;
 }
 
 export interface AnalyseOptions {

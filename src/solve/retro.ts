@@ -19,6 +19,39 @@ export type Feedback = 'find' | 'eval' | 'win' | 'fail' | 'view';
 /** retroCtrl: `if (diff > -0.04) onWin(); else onFail();` */
 export const ACCEPT_DIFF = -0.04;
 
+/**
+ * Ours, not lila's — lila only has the eval test above.
+ *
+ * The eval test asks "did that throw anything away", which in a position with
+ * several sound moves accepts all of them. That is the right question for a
+ * mistake-review tool and it is what Easy keeps. The harder settings ask a
+ * second, narrower one: is this a move the engine itself would name, i.e. is
+ * it inside the top few lines of a MultiPV search of the position.
+ *
+ * 0 means no such test. Both tests must pass on medium and hard: being ranked
+ * fifth is no defence in a position where only two moves hold.
+ */
+export type Difficulty = 'easy' | 'medium' | 'hard';
+
+export const TOP_LINES: Record<Difficulty, number> = { easy: 0, medium: 5, hard: 2 };
+
+/** How many lines the board draws on a solved position, whatever the setting. */
+export const SHOWN_LINES = 5;
+
+export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'medium', 'hard'];
+
+export const isDifficulty = (value: unknown): value is Difficulty =>
+  DIFFICULTIES.includes(value as Difficulty);
+
+/**
+ * `top` is the engine's moves in its own order, best first. Rank is decided on
+ * the move alone: the same move reached by a different move order does not
+ * exist here, a uci is a uci.
+ */
+export function withinTopLines(uci: string, top: readonly string[], lines: number): boolean {
+  return lines <= 0 || top.slice(0, lines).includes(uci);
+}
+
 export interface Move {
   uci: string;
   san: string;
@@ -84,10 +117,17 @@ export class Solve {
     return verdict;
   }
 
-  /** The answer to the 'eval' state, once the local engine has one. */
-  onCeval(yourEval: EvalScore): Feedback {
+  /**
+   * The answer to the 'eval' state, once the local engine has one.
+   *
+   * `ranked` is the difficulty gate: false means the move was outside the top
+   * lines the setting asks for, which fails whatever the eval says — and there
+   * is then usually no score to weigh either, because a move the engine did
+   * not rank never got one.
+   */
+  onCeval(yourEval: EvalScore | undefined, ranked = true): Feedback {
     if (this.feedback !== 'eval') return this.feedback;
-    this.feedback = judgeEval(this.puzzle, yourEval);
+    this.feedback = ranked && yourEval ? judgeEval(this.puzzle, yourEval) : 'fail';
     return this.feedback;
   }
 

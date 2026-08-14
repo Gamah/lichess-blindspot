@@ -310,6 +310,30 @@ footer {
   opacity: 0.7;
 }
 
+.dim {
+  color: var(--dim);
+}
+
+/* The one-time difficulty notice: three buttons, all equally the answer, so
+   none of them is styled as the one to press. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.choices button {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.choices button:hover {
+  border-color: var(--accent);
+  filter: none;
+}
+
 /* --- top bar, storage panel --- */
 
 .topbar {
