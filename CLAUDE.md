@@ -60,6 +60,41 @@ The games-export endpoint could not be reached from this host (permanently
 `curl -s https://lichess.org/api/puzzle/daily` for an id of an analysed game,
 then `GET /game/export/{id}?evals=true&division=true`.
 
+## The engine
+
+`@lichess-org/stockfish-web`, the **`sf_18_smallnet`** build, booted the way
+lila boots it (`ui/lib/src/ceval/engines/stockfishWebEngine.ts`, read
+2026-08-14): `wasmMemory: sharedWasmMemory(1536)`, `locateFile`, and
+`mainScriptUrlOrBlob` all have to be passed, and the net arrives via
+`setNnueBuffer`, not over the wire by the engine itself.
+
+- Net sizes, measured 2026-08-14: smallnet `nn-4ca89e4b3abf` **15 MB**, the
+  `sf_18` big net **109 MB**, its small companion 3.5 MB. The big one is not a
+  trade a first visit can make, which is what picks the build.
+- `https://lichess1.org/assets/lifat/nnue/<name>` serves them with
+  `access-control-allow-origin: *` and `cross-origin-resource-policy:
+  cross-origin`, so it is fetchable under our own `require-corp`. [SOURCE] —
+  headers, not a documented contract; if it ever breaks, host the net
+  ourselves. `tests.stockfishchess.org` has neither header and is not usable
+  from the browser.
+- Ask `getRecommendedNnue(i)` for the filenames rather than hardcoding one; it
+  is what survives an engine bump.
+- **The engine .js cannot be bundled.** It spawns its pthreads by re-importing
+  its own URL and finds its `.wasm` next to it, so `scripts/prepare-engine.mjs`
+  copies both into `public/engine/` (gitignored) and we dynamic-import the URL
+  with `/* @vite-ignore */`.
+- UCI scores are from the side to move; `parseInfo` normalises to White's POV
+  at the boundary so nothing downstream has to think about it.
+
+## Node's type stripping
+
+Tests run under `node --test --experimental-strip-types`, which is **strip-only**:
+no TypeScript that needs emit. In practice that means **no constructor parameter
+properties** (`constructor(private readonly x: T) {}`) anywhere `src/` can be
+reached from a test, and no enums or namespaces. Assign in the body instead. The
+type checker will not warn you; the test run fails with
+`ERR_INVALID_TYPESCRIPT_SYNTAX`.
+
 ## Ported code
 
 The candidate finder and solve state machine are ports of lila's
@@ -101,6 +136,15 @@ tolerate one reload; do not assert isolation at startup.
 `public/_headers` and the vite dev-server headers stay regardless: they make
 dev match the isolated case, and they make a move to Cloudflare Pages a one-line
 switch if the worker proves flaky.
+
+`public/coi-serviceworker.js` deliberately touches **same-origin responses
+only**. Cross-origin ones — the lichess API, the neural net — already carry the
+CORS and CORP headers `require-corp` wants, and re-wrapping an opaque response
+in the worker breaks them.
+
+The Pages build needs `BASE=/<repo>/` (the workflow passes it): the engine and
+the service worker are loaded by URL rather than by import, so a wrong base
+404s them at runtime instead of failing the build.
 
 ## Licence
 

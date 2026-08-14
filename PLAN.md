@@ -2,21 +2,15 @@
 
 | Rank | Item |
 | ---: | --- |
-| 95 | Fetch pipeline: `GET /api/games/user/{u}?max=20&moves=true&evals=true&division=true&clocks=false` as NDJSON, streamed, into IndexedDB `games`. Handle 404 (no such user) and 429. |
-| 92 | Candidate finder: port `evalSwings` from lila `ui/analyse/src/nodeFinder.ts` + `winningChances.ts`. Pure function over (moves, evals, pov) → candidate plies. Node-testable, no DOM. |
-| 90 | Stockfish worker: `@lichess-org/stockfish-web`, two-pass — shallow sweep (~depth 12) over all plies to find swings, deep re-check (~1s) on candidates only. Emits the same eval shape as the lichess export so both paths feed one finder. |
-| 88 | COOP/COEP: `public/_headers` + Cloudflare Pages, verified with `crossOriginIsolated === true`. Nothing multithreaded works without it. |
-| 86 | Deploy to GitHub Pages, alongside the repo. Pages cannot set response headers, so COOP/COEP has to come from a service worker that re-serves the page with them (the coi-serviceworker approach): first visit registers the worker and reloads once, and `crossOriginIsolated` is only true from the second load on. Verify the multithreaded engine actually starts under it, and that cross-origin `fetch` to lichess and the masters explorer still works under `require-corp` (both send CORS headers, so they should). Keep `public/_headers` so a Cloudflare Pages deploy stays a one-line switch if the worker proves flaky. |
-| 85 | Deck build: candidate → puzzle record {id, gameId, ply, fen, pov, played, best, pv, prevEval, eval}. Shuffle across games, never two from the same game consecutively. |
-| 84 | Load gate: block on a progress bar until ~5 games are analysed, then unlock the board and keep analysing in the background. |
-| 82 | Solve loop: chessground board, player POV, retro state machine ported from `retroCtrl.ts` — accept the engine line, accept a mate, reject the move actually played, otherwise judge with local ceval at `povDiff > -0.04`. |
-| 80 | Strip context: no game link, opponent, date, ply, eval bar or move list until after the position is solved. Then reveal the game. |
-| 75 | Persistence: `idb-keyval` store per username, `navigator.storage.persist()` on first solve. Solved puzzles leave the shuffle, stay in the store. |
-| 72 | Deck pressure: when unsolved count drops below a threshold, fetch the next batch of 20 and analyse in the background. |
-| 68 | Profile switching: username input remembers recent names, each with its own store. |
-| 60 | Storage panel: `navigator.storage.estimate()` usage/quota, purge controls, "bring back solved" control. |
+| 95 | Verify the whole thing in a browser. Nothing below the type checker has run: no page has been loaded, no engine has started, no puzzle has been solved. In particular — does `sf_18_smallnet.js` boot from `public/engine/` with `locateFile` pointing at the same directory, does the 15 MB net land and cache, is `crossOriginIsolated` true on the second load under the service worker, and does the depth-12 sweep take a bearable amount of time on a real game? |
+| 90 | Deploy to GitHub Pages and check the deployed thing, not the dev server. `.github/workflows/pages.yml` builds with `BASE=/<repo>/`; confirm the service worker registers at that scope, that the one-reload dance happens once and not on every visit, and that cross-origin `fetch` to lichess and to `lichess1.org` still works under `require-corp`. |
+| 80 | Tune the analysis budget against a real machine: `SWEEP_DEPTH` 12 and `DEEP_MOVETIME` 1000 ms are guesses. A 60-ply game is 60 sweeps plus two deep searches per swing, and the load gate makes someone wait for five games of that. If it is too slow, the sweep depth is the dial. |
+| 72 | Rate-limit handling in the UI. `fetchGames` distinguishes 404 and 429, but the one-concurrent-export 429 (`{"error":"Please only run 1 request(s) at a time"}`) means "you have two tabs open", which is a different sentence to say to someone than "you are going too fast". |
+| 68 | Profile switching in the app: the recent-username list is remembered but there is no way back to the landing screen without reloading. |
+| 60 | Storage panel: `navigator.storage.estimate()` usage/quota, purge controls, "bring back solved". `Profile.purgeGames`, `clearSolves` and `wipe` exist and have no UI. |
 | 55 | Auto-purge policy: evict raw game payloads oldest-first past a usage threshold; never evict derived puzzles or solve history. |
-| 40 | Opening-book cancellation: drop candidates whose played move appears in the masters explorer (`https://explorer.lichess.ovh/masters`), as retro does, gated on `division.middle`. |
+| 50 | Underpromotion. The board auto-queens, so a puzzle whose answer is a knight promotion cannot be solved. Rare enough to ship without, common enough to be a real bug when it bites. |
+| 40 | Opening-book cancellation: drop candidates whose played move appears in the masters explorer (`https://explorer.lichess.ovh/masters`), as retro does, gated on `division.middle`. `Solve` already accepts an `openingUcis` list and nothing fills it. |
 | 30 | Stretch: spaced repetition — resurface solved positions on an SM-2-lite schedule instead of one-shot. |
 | 25 | Stretch: pad the deck with positions the player got *right*, so the deck stops signalling "there is a mistake here" and trains detection. |
 | 20 | Stretch: mirror/recolour repeat showings to defeat memorisation. |
