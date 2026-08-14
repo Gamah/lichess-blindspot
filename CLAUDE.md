@@ -12,7 +12,8 @@ apidoc is silent.
 Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 
 - `GET /api/games/user/{u}` is `OpenOrScoped` — **no token required**, games are
-  public. Anon rate limit 25 games/sec, 60 for your own games with a token.
+  public. Stream throttle, from the apidoc 2026-08-14 (spec 2.0.163): anon
+  **20 games/sec**, 30 authenticated, 60 for your own games with a token.
   One concurrent export per IP (`GlobalConcurrencyLimitPerIpAndUserOption`).
 - `evals=true` adds an `analysis` array, one entry per ply, from
   `modules/analyse/src/main/JsonView.scala`:
