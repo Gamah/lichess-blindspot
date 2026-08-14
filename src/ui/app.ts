@@ -8,6 +8,7 @@
 import { Deck } from '../app/deck.ts';
 import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
+import { replay } from '../deck/positions.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
@@ -396,7 +397,8 @@ export class App {
   }
 
   private async nextPuzzle(): Promise<void> {
-    const puzzle = this.deck.next();
+    const drawn = this.deck.next();
+    const puzzle = drawn ? await this.withIntro(drawn) : undefined;
     if (puzzle) {
       this.awaitingPuzzles = false;
       clearTimeout(this.exhaustedTimer);
@@ -408,14 +410,46 @@ export class App {
     }
     this.solve = new Solve(puzzle);
     this.attempts = 0;
-    this.board?.set(puzzle.fen, puzzle.pov, true);
     this.setReveal('');
+    this.toggleNext(false);
+    this.renderCounters();
+
+    const them = puzzle.pov === 'white' ? 'Black' : 'White';
+    if (puzzle.intro)
+      this.setFeedback(`<strong>${them} has just moved.</strong> <span>Watch.</span>`);
+    await this.board?.present(puzzle.fen, puzzle.pov, puzzle.intro);
+    // A later puzzle may have taken over while the opponent's move played out.
+    if (this.solve?.puzzle.id !== puzzle.id) return;
     this.setFeedback(
       `<strong>${puzzle.pov === 'white' ? 'White' : 'Black'} to play.</strong>
        <span>Find the move. There is a better one than the one that was played.</span>`,
     );
-    this.toggleNext(false);
-    this.renderCounters();
+  }
+
+  /**
+   * Puzzles built before the opening animation existed have no intro. The raw
+   * game is usually still here, so replay it and fill one in rather than
+   * having half a deck open cold. Best effort: game payloads are purgeable.
+   */
+  private async withIntro(puzzle: Puzzle): Promise<Puzzle> {
+    if (puzzle.intro || !this.profile) return puzzle;
+    try {
+      const game = await this.profile.game(puzzle.gameId);
+      if (!game?.moves) return puzzle;
+      const steps = replay(game.moves.split(' ').filter(Boolean), game.initialFen);
+      const before = steps[puzzle.ply - 2];
+      // The move has to land exactly on the position being solved, or the
+      // game and the puzzle disagree and the animation would be a lie.
+      if (!before || before.after !== puzzle.fen) return puzzle;
+      const filled: Puzzle = {
+        ...puzzle,
+        intro: { fen: before.fen, uci: before.uci, san: before.san },
+      };
+      await this.profile.putPuzzles([filled]);
+      return filled;
+    } catch {
+      return puzzle;
+    }
   }
 
   private async onMove(move: PlayedMove): Promise<void> {

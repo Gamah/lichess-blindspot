@@ -102,4 +102,12 @@ test('a candidate becomes a puzzle holding the position before the mistake', () 
   assert.equal(p!.played.san, 'Ng5');
   assert.equal(p!.best, 'f1c4');
   assert.deepEqual(p!.pv, ['Bc4', 'Bc5', 'c3']);
+
+  // The puzzle opens a ply earlier and plays the opponent's move, so the
+  // position arrives with a moment of context rather than cold.
+  assert.equal(p!.intro!.fen, steps[3]!.fen);
+  assert.equal(p!.intro!.uci, steps[3]!.uci);
+  assert.equal(p!.intro!.san, 'Nc6');
+  // and that move must land exactly on the position being solved
+  assert.equal(steps[3]!.after, p!.fen);
 });

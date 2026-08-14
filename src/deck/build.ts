@@ -14,6 +14,13 @@ export interface Puzzle {
   ply: number;
   /** The position to solve, i.e. before the mistake. */
   fen: string;
+  /**
+   * One ply earlier: the position before the opponent's last move, and that
+   * move. Played out on the board first, the way a lichess puzzle opens, so a
+   * position arrives with a moment of context instead of cold. Absent on
+   * puzzles built before this existed.
+   */
+  intro?: { fen: string; uci: string; san: string };
   /** The side to move, and the side whose blindspot this is. */
   pov: Color;
   /** What was actually played — the one answer that is definitely wrong. */
@@ -40,11 +47,15 @@ export function buildPuzzles(
   for (const c of candidates) {
     const step = steps[c.index];
     if (!step) continue;
+    // Candidates never start at index 0 — a swing needs a previous ply — so
+    // there is always an opponent move to show. Guarded anyway.
+    const before = steps[c.index - 1];
     out.push({
       id: `${gameId}:${c.index + 1}`,
       gameId,
       ply: c.index + 1,
       fen: step.fen,
+      ...(before ? { intro: { fen: before.fen, uci: before.uci, san: before.san } } : {}),
       pov,
       played: { san: step.san, uci: step.uci },
       best: c.best,

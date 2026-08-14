@@ -21,6 +21,8 @@ export interface PlayedMove {
 export class Board {
   private cg: Api;
   private fen = '';
+  /** Bumps per position shown, so a slow intro cannot land on the next puzzle. */
+  private presenting = 0;
   private orientation: Color = 'white';
 
   private readonly el: HTMLElement;
@@ -38,15 +40,38 @@ export class Board {
     });
   }
 
+  /**
+   * Open on the previous position, play the opponent's move, then hand over —
+   * the way a lichess puzzle starts. Returns once the position is solvable.
+   */
+  async present(
+    fen: string,
+    orientation: Color,
+    intro: { fen: string; uci: string } | undefined,
+    pause = 700,
+  ): Promise<void> {
+    const token = ++this.presenting;
+    if (!intro) return this.set(fen, orientation, true);
+
+    this.set(intro.fen, orientation, false);
+    await sleep(pause);
+    // Someone hit Next while this was playing; that puzzle owns the board now.
+    if (token !== this.presenting) return;
+    const orig = intro.uci.slice(0, 2) as Key;
+    const dest = intro.uci.slice(2, 4) as Key;
+    this.cg.move(orig, dest);
+    this.set(fen, orientation, true, [orig, dest]);
+  }
+
   /** Show a position, taking moves from `orientation`'s side. */
-  set(fen: string, orientation: Color, movable: boolean): void {
+  set(fen: string, orientation: Color, movable: boolean, lastMove?: [Key, Key]): void {
     this.fen = fen;
     this.orientation = orientation;
     this.cg.set({
       fen,
       orientation,
       turnColor: orientation,
-      lastMove: undefined,
+      lastMove,
       check: isCheck(fen),
       movable: {
         color: movable ? orientation : undefined,
