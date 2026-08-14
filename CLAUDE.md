@@ -86,11 +86,21 @@ Thresholds that are load-bearing and must not drift silently:
 
 ## Cross-origin isolation
 
-Multithreaded Stockfish needs `SharedArrayBuffer`, which needs COOP/COEP.
-`public/_headers` carries them and Cloudflare Pages serves them. If
+Multithreaded Stockfish needs `SharedArrayBuffer`, which needs COOP/COEP. If
 `crossOriginIsolated` is false the engine silently falls back to the
-single-threaded build and the analysis pass becomes unusably slow — assert on it
+single-threaded build and the analysis pass becomes unusably slow, so surface it
 rather than letting it degrade quietly.
+
+The deploy target is **GitHub Pages**, which cannot set response headers at all
+— `public/_headers` is inert there. Isolation has to come from a service worker
+that re-serves the page with the headers itself, which means
+`crossOriginIsolated` is **false on a visitor's first load** and only true after
+the worker registers and the page reloads once. So the engine bootstrap must
+tolerate one reload; do not assert isolation at startup.
+
+`public/_headers` and the vite dev-server headers stay regardless: they make
+dev match the isolated case, and they make a move to Cloudflare Pages a one-line
+switch if the worker proves flaky.
 
 ## Licence
 
