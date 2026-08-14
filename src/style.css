@@ -234,3 +234,53 @@ footer {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- top bar, storage panel --- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  width: min(1100px, 100%);
+  margin: 0 auto;
+}
+
+.who {
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+button.quiet {
+  background: transparent;
+  color: var(--dim);
+  border-color: var(--line);
+  padding: 0.35rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+button.quiet:hover {
+  color: var(--text);
+}
+
+button.danger:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.panel {
+  width: min(1100px, 100%);
+  margin: 0 auto 2rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.panel[hidden] {
+  display: none;
+}

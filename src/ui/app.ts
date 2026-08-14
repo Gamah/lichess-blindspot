@@ -12,7 +12,7 @@ import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfis
 import type { Analyser } from '../engine/analyse.ts';
 import type { ExportedGame } from '../lichess/export.ts';
 import { Solve } from '../solve/retro.ts';
-import { Profile, requestPersistence, type SolveRecord } from '../storage/db.ts';
+import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
 import { recentUsernames, rememberUsername } from '../storage/prefs.ts';
 import { Board, type PlayedMove } from './board.ts';
 
@@ -94,6 +94,12 @@ export class App {
 
   private renderSolving(): void {
     this.root.innerHTML = `
+      <header class="topbar">
+        <span class="who">${escape(this.profile?.username ?? '')}</span>
+        <span class="spacer"></span>
+        <button id="storage" class="quiet">Storage</button>
+        <button id="switch" class="quiet">Switch player</button>
+      </header>
       <main class="solving">
         <div class="board-wrap"><div class="board" id="board"></div></div>
         <aside class="side">
@@ -107,11 +113,78 @@ export class App {
           <div class="counters" id="counters"></div>
         </aside>
       </main>
+      <div class="panel" id="panel" hidden></div>
       ${footer()}`;
     this.board = new Board(this.root.querySelector('#board') as HTMLElement, m => void this.onMove(m));
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
+    (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
+    (this.root.querySelector('#storage') as HTMLButtonElement).onclick = () => void this.toggleStorage();
+  }
+
+  /** Back to the landing screen, with the background work stopped. */
+  private switchPlayer(): void {
+    this.pipeline?.stop();
+    const previous = this.profile?.username ?? '';
+    this.pipeline = undefined;
+    this.profile = undefined;
+    this.deck = new Deck();
+    this.solve = undefined;
+    this.board = undefined;
+    this.progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
+    this.unlocked = false;
+    // The engine stays booted: it is expensive to start and belongs to nobody.
+    this.renderLanding(previous);
+  }
+
+  private async toggleStorage(): Promise<void> {
+    const panel = this.root.querySelector('#panel') as HTMLElement | null;
+    if (!panel || !this.profile) return;
+    if (!panel.hidden) {
+      panel.hidden = true;
+      return;
+    }
+    const estimate = await storageEstimate();
+    const solved = this.deck.solvedCount();
+    panel.hidden = false;
+    panel.innerHTML = `
+      <h2>Storage</h2>
+      <p class="line">${
+        estimate
+          ? `${mb(estimate.usage)} used of ${mb(estimate.quota)} available`
+          : 'This browser will not say how much space it is using.'
+      }</p>
+      <p class="hint">Games can always be fetched again. Puzzles and your ${solved} solved
+        position${solved === 1 ? '' : 's'} cannot, and are never purged automatically.</p>
+      <div class="controls">
+        <button id="purge" class="quiet">Purge stored games</button>
+        <button id="unsolve" class="quiet">Bring back solved</button>
+        <button id="wipe" class="quiet danger">Delete everything for ${escape(
+          this.profile.username,
+        )}</button>
+        <button id="close">Close</button>
+      </div>
+      <p class="line" id="panel-status"></p>`;
+
+    const status = (text: string) => {
+      const el = panel.querySelector('#panel-status');
+      if (el) el.textContent = text;
+    };
+    (panel.querySelector('#close') as HTMLButtonElement).onclick = () => (panel.hidden = true);
+    (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
+      const dropped = await this.profile?.purgeGames();
+      status(`${dropped ?? 0} game payload${dropped === 1 ? '' : 's'} dropped.`);
+    };
+    (panel.querySelector('#unsolve') as HTMLButtonElement).onclick = async () => {
+      await this.profile?.clearSolves();
+      status('Solve history cleared. Reload to shuffle the solved positions back in.');
+    };
+    (panel.querySelector('#wipe') as HTMLButtonElement).onclick = async () => {
+      await this.profile?.wipe();
+      status('Deleted.');
+      this.switchPlayer();
+    };
   }
 
   // --- flow ---------------------------------------------------------------
@@ -355,6 +428,8 @@ export class App {
 
 const escape = (s: string): string =>
   s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 
 const showEval = (e: { cp?: number; mate?: number }): string =>
   e.mate !== undefined ? `#${e.mate}` : `${e.cp! > 0 ? '+' : ''}${(e.cp! / 100).toFixed(1)}`;

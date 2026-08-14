@@ -113,6 +113,18 @@ export interface StorageEstimate {
   quota: number;
 }
 
+/**
+ * Raw game payloads are the only thing here worth evicting: lichess will hand
+ * them back. Runs after a batch, so a long session doesn't quietly fill the
+ * quota and get the whole database dropped instead.
+ */
+export async function purgeIfTight(profile: Profile, threshold = 0.8, keep = 20): Promise<number> {
+  const estimate = await storageEstimate();
+  if (!estimate || !estimate.quota) return 0;
+  if (estimate.usage / estimate.quota < threshold) return 0;
+  return profile.purgeGames(keep);
+}
+
 export async function storageEstimate(): Promise<StorageEstimate | undefined> {
   if (!navigator.storage?.estimate) return undefined;
   const { usage, quota } = await navigator.storage.estimate();

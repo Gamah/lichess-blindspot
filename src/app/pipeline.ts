@@ -10,7 +10,7 @@ import { replay } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
-import type { Profile } from '../storage/db.ts';
+import { purgeIfTight, type Profile } from '../storage/db.ts';
 
 export interface PipelineEvents {
   /** New puzzles, already stored. */
@@ -58,6 +58,9 @@ export class Pipeline {
     try {
       await this.fetchBatch();
       await this.drain();
+      // Between batches, not during: purging mid-analysis would drop a payload
+      // the queue still holds a reference to.
+      await purgeIfTight(this.profile);
     } catch (e) {
       if (!(e instanceof Aborted)) this.events.onError(e as Error);
     } finally {
