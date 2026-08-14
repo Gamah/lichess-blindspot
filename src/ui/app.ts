@@ -72,18 +72,57 @@ export class App {
     this.root.innerHTML = `
       <main class="landing">
         <h1>Blindspot</h1>
-        <p class="tagline">Puzzles from your own games, built entirely inside this browser tab.</p>
-        <p class="hint">There is no server and no account. Your games are fetched straight from
-          lichess, the chess engine runs here in this tab, and everything it works out is kept in
-          this browser and sent nowhere. Clear the site data and it is gone.</p>
+        <p class="tagline">Your own blunders, with the game taken off them.</p>
+
+        <p>Lichess' <em>Learn from your mistakes</em> walks you through one game's mistakes in
+          order, with the game around them — it reads as review, and you already know something
+          went wrong. Blindspot takes the same positions, strips them, and shuffles them across
+          your recent games. No opponent, no date, no move number, no eval bar, no “you played
+          Qh5”. Just a position, from your side of the board, and no clue whether the answer is a
+          combination or a quiet pawn move.</p>
+
         <form class="start">
           <input name="username" list="recent" placeholder="lichess username" autocomplete="off"
                  autocapitalize="off" spellcheck="false" value="${escape(preset)}" required>
           <datalist id="recent">${recentUsernames().map(u => `<option value="${escape(u)}">`).join('')}</datalist>
           <button type="submit">Find my blindspots</button>
         </form>
+        <p class="hint">Any lichess username works — practising someone else's blindspots is a
+          perfectly good way to spend an evening.</p>
+
         ${error ? `<p class="error">${escape(error)}</p>` : ''}
         ${isolationWarning(this.isolation)}
+
+        <ol class="steps">
+          <li>
+            <h2>Your games, from lichess</h2>
+            <p>The last 20 come straight from the public API. No account, no token, nothing to
+              authorise.</p>
+          </li>
+          <li>
+            <h2>Analysed here, in this tab</h2>
+            <p>Games lichess has already analysed bring their evaluations with them and cost
+              nothing. The rest are analysed by Stockfish running in this page — the first visit
+              downloads about 15 MB of neural net, once, and a game takes some seconds.</p>
+          </li>
+          <li>
+            <h2>The moments it fell apart</h2>
+            <p>Every move where your position dropped sharply becomes a puzzle, using the same
+              rule lichess itself uses. Opening moves the masters play are dropped rather than
+              held against you.</p>
+          </li>
+          <li>
+            <h2>Judged on merit, not on one answer</h2>
+            <p>A move is right if it doesn't throw away winning chances — not if it matches one
+              blessed solution. Quiet positional saves count. The move you actually played never
+              does.</p>
+          </li>
+        </ol>
+
+        <p class="fineprint"><strong>There is no server.</strong> This page is static, your games
+          are fetched straight from lichess, the engine runs in this tab, and the puzzles and your
+          solving history are kept in this browser and sent nowhere. Clear the site data and it is
+          all gone. The source is linked below, as the licence requires.</p>
       </main>
       ${footer()}`;
     const form = this.root.querySelector('form.start') as HTMLFormElement;

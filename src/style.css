@@ -58,12 +58,80 @@ main {
 
 /* --- landing / loading --- */
 
-.landing,
+.landing {
+  max-width: 44rem;
+}
+
+.landing p {
+  max-width: 38rem;
+}
+
 .loading {
   max-width: 34rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
+}
+
+.landing .tagline {
+  font-size: 1.15rem;
+  color: var(--text);
+  margin-top: 0;
+}
+
+/* Numbered, because it is a sequence: fetch, analyse, find, judge. */
+.steps {
+  list-style: none;
+  counter-reset: step;
+  padding: 0;
+  margin: 2.5rem 0 0;
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+.steps li {
+  counter-increment: step;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem 1rem 1rem 3rem;
+  position: relative;
+}
+
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 1rem;
+  top: 1rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.steps h2 {
+  font-size: 1rem;
+  margin: 0 0 0.35rem;
+}
+
+.steps p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.92rem;
+}
+
+.fineprint {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 0.9rem;
 }
 
 .tagline,
