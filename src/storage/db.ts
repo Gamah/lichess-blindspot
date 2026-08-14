@@ -40,52 +40,92 @@ export const dbName = (username: string): string => `blindspot:${username.toLowe
 
 export class Profile {
   readonly username: string;
-  private store: UseStore;
+  /**
+   * False when this browser refuses us storage — Firefox with cookies blocked
+   * for the site throws `SecurityError` from `indexedDB.open`, and it throws
+   * it *here*, in the constructor, because idb-keyval opens eagerly. Every
+   * method below then fails soft: reads come back empty, writes do nothing,
+   * and the session works for as long as the tab is open. A browser that will
+   * not remember anything is a reason to lose persistence, not the app.
+   */
+  readonly available: boolean;
+  private store: UseStore | undefined;
 
   constructor(username: string) {
     this.username = username;
-    this.store = createStore(dbName(username), 'kv');
+    try {
+      this.store = createStore(dbName(username), 'kv');
+      this.available = true;
+    } catch (e) {
+      console.warn('storage unavailable:', e);
+      this.available = false;
+    }
   }
 
-  meta = async (): Promise<Meta> => ({ ...EMPTY_META, ...((await get<Meta>(META, this.store)) ?? {}) });
-  setMeta = (meta: Meta): Promise<void> => set(META, meta, this.store);
+  /** Runs `work` against the store, or gives up quietly and returns `fallback`. */
+  private async use<T>(work: (store: UseStore) => Promise<T>, fallback: T): Promise<T> {
+    if (!this.store) return fallback;
+    try {
+      return await work(this.store);
+    } catch (e) {
+      console.warn('storage failed:', e);
+      return fallback;
+    }
+  }
 
-  game = (id: string): Promise<ExportedGame | undefined> => get(GAME + id, this.store);
-  putGame = (game: ExportedGame): Promise<void> => set(GAME + game.id, game, this.store);
+  meta = (): Promise<Meta> =>
+    this.use(async store => ({ ...EMPTY_META, ...((await get<Meta>(META, store)) ?? {}) }), {
+      ...EMPTY_META,
+    });
+
+  setMeta = (meta: Meta): Promise<void> => this.use(store => set(META, meta, store), undefined);
+
+  game = (id: string): Promise<ExportedGame | undefined> =>
+    this.use(store => get<ExportedGame>(GAME + id, store), undefined);
+
+  putGame = (game: ExportedGame): Promise<void> =>
+    this.use(store => set(GAME + game.id, game, store), undefined);
 
   putPuzzles = (puzzles: readonly Puzzle[]): Promise<void> =>
-    setMany(
-      puzzles.map(p => [PUZZLE + p.id, p] as [string, Puzzle]),
-      this.store,
+    this.use(
+      store =>
+        setMany(
+          puzzles.map(p => [PUZZLE + p.id, p] as [string, Puzzle]),
+          store,
+        ),
+      undefined,
     );
 
-  puzzles = (): Promise<Puzzle[]> => valuesWithPrefix<Puzzle>(this.store, PUZZLE);
+  puzzles = (): Promise<Puzzle[]> => this.use(store => valuesWithPrefix<Puzzle>(store, PUZZLE), []);
 
-  solves = (): Promise<SolveRecord[]> => valuesWithPrefix<SolveRecord>(this.store, SOLVE);
+  solves = (): Promise<SolveRecord[]> => this.use(store => valuesWithPrefix<SolveRecord>(store, SOLVE), []);
 
-  recordSolve = (record: SolveRecord): Promise<void> => set(SOLVE + record.puzzleId, record, this.store);
+  recordSolve = (record: SolveRecord): Promise<void> =>
+    this.use(store => set(SOLVE + record.puzzleId, record, store), undefined);
 
   /** "Bring back solved": forget the history, keep the puzzles. */
-  clearSolves = async (): Promise<void> => {
-    const keys = (await entries(this.store)).map(([k]) => k).filter(isPrefixed(SOLVE));
-    await delMany(keys, this.store);
-  };
+  clearSolves = (): Promise<void> =>
+    this.use(async store => {
+      const keys = (await entries(store)).map(([k]) => k).filter(isPrefixed(SOLVE));
+      await delMany(keys, store);
+    }, undefined);
 
   /** Raw payloads only. Oldest first, and never the puzzles built from them. */
-  purgeGames = async (keep = 0): Promise<number> => {
-    const games = (await entries<string, unknown>(this.store))
-      .filter(([k]) => isPrefixed(GAME)(k))
-      .map(([k, v]) => [k, v as ExportedGame] as const)
-      .sort((a, b) => (b[1].createdAt ?? 0) - (a[1].createdAt ?? 0));
-    const drop = games.slice(keep).map(([k]) => k);
-    await delMany(drop, this.store);
-    return drop.length;
-  };
+  purgeGames = (keep = 0): Promise<number> =>
+    this.use(async store => {
+      const games = (await entries<string, unknown>(store))
+        .filter(([k]) => isPrefixed(GAME)(k))
+        .map(([k, v]) => [k, v as ExportedGame] as const)
+        .sort((a, b) => (b[1].createdAt ?? 0) - (a[1].createdAt ?? 0));
+      const drop = games.slice(keep).map(([k]) => k);
+      await delMany(drop, store);
+      return drop.length;
+    }, 0);
 
-  forgetGame = (id: string): Promise<void> => del(GAME + id, this.store);
+  forgetGame = (id: string): Promise<void> => this.use(store => del(GAME + id, store), undefined);
 
-  /** Everything for this username. Used by the storage panel, nothing else. */
-  wipe = (): Promise<void> => clear(this.store);
+  /** Everything for this username. Used by the settings panel, nothing else. */
+  wipe = (): Promise<void> => this.use(store => clear(store), undefined);
 }
 
 const isPrefixed =

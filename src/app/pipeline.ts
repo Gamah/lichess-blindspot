@@ -10,7 +10,7 @@ import { replay, type ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
-import { purgeIfTight, type Profile } from '../storage/db.ts';
+import { purgeIfTight, type Meta, type Profile } from '../storage/db.ts';
 import { settings } from '../storage/prefs.ts';
 
 export interface PipelineEvents {
@@ -62,6 +62,17 @@ export class Pipeline {
   private wake: (() => void) | undefined;
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private abort = new AbortController();
+  /**
+   * Paging state for this session. Seeded from storage once and thereafter
+   * authoritative, with writes going through to storage best-effort.
+   *
+   * It has to work this way. A browser that refuses us storage — Firefox with
+   * cookies blocked — makes every write a no-op, and if this were read back
+   * from storage each time then `until` would never advance and `seen` would
+   * always be empty: the same twenty games fetched and re-analysed forever.
+   * In memory it pages properly and simply forgets at the end of the session.
+   */
+  private memo: Meta | undefined;
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
   private exhausted = false;
@@ -174,8 +185,20 @@ export class Pipeline {
     this.events.onProgress(this.progress);
   }
 
+  /** The session's paging state, read from storage the first time only. */
+  private async state(): Promise<Meta> {
+    this.memo ??= await this.profile.meta();
+    return this.memo;
+  }
+
+  private async remember(change: (meta: Meta) => void): Promise<void> {
+    const meta = await this.state();
+    change(meta);
+    await this.profile.setMeta(meta);
+  }
+
   private async fetchBatch(): Promise<void> {
-    const meta = await this.profile.meta();
+    const meta = await this.state();
     const seen = new Set([...meta.analysed, ...meta.fetched]);
     let oldest: number | undefined;
     let total = 0;
@@ -193,10 +216,7 @@ export class Pipeline {
     }
     // Page backwards from the oldest game of this batch next time. Without this
     // the second batch is the first batch.
-    await this.profile.setMeta({
-      ...meta,
-      ...(oldest !== undefined ? { until: oldest - 1 } : {}),
-    });
+    if (oldest !== undefined) await this.remember(m => (m.until = oldest - 1));
     // No games at all means we have paged back past the first one they ever
     // played. Asking again would get the same nothing, forever.
     if (total === 0) this.exhausted = true;
@@ -226,11 +246,11 @@ export class Pipeline {
     }
   }
 
-  private async markDone(id: string, produced: boolean): Promise<void> {
-    const meta = await this.profile.meta();
-    if (produced) meta.analysed = [...new Set([...meta.analysed, id])];
-    else meta.fetched = [...new Set([...meta.fetched, id])];
-    await this.profile.setMeta(meta);
+  private markDone(id: string, produced: boolean): Promise<void> {
+    return this.remember(meta => {
+      const list = produced ? meta.analysed : meta.fetched;
+      if (!list.includes(id)) list.push(id);
+    });
   }
 
   private async analyse(game: ExportedGame): Promise<Puzzle[]> {

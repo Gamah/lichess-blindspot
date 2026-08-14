@@ -15,6 +15,37 @@
 // there, this finds `crossOriginIsolated` true, and does nothing at all.
 
 const RELOADED = 'blindspot.coi-reloaded';
+
+/**
+ * Firefox with cookies blocked for a site throws `SecurityError: The operation
+ * is insecure` on *touching* sessionStorage — not on writing, on reading. So
+ * every access is guarded, and there is a fallback for the one thing the flag
+ * is load-bearing for: stopping a reload loop when the worker installs but
+ * never isolates. `window.name` survives a same-origin reload and is not
+ * storage, so it is not blocked by a storage policy.
+ */
+const reloadFlag = {
+  get(): boolean {
+    try {
+      if (sessionStorage.getItem(RELOADED)) return true;
+    } catch {
+      // storage blocked; fall through to the window.name marker
+    }
+    return window.name.includes(RELOADED);
+  },
+  set(): void {
+    try {
+      sessionStorage.setItem(RELOADED, '1');
+    } catch {
+      // ignore
+    }
+    try {
+      if (!window.name.includes(RELOADED)) window.name += RELOADED;
+    } catch {
+      // ignore
+    }
+  },
+};
 /** Long enough for a slow phone to install a worker, short enough to give up. */
 const CLAIM_TIMEOUT = 10_000;
 
@@ -29,18 +60,30 @@ export interface IsolationReport {
 
 export function report(): IsolationReport {
   return {
-    isolated: crossOriginIsolated,
+    isolated: typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated,
     controlled: Boolean(navigator.serviceWorker?.controller),
     sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
   };
 }
 
 export async function ensureIsolation(): Promise<IsolationReport> {
+  try {
+    return await isolate();
+  } catch (e) {
+    // Nothing in here is allowed to stop the app starting. Games lichess has
+    // already analysed need no engine at all, and a page that renders nothing
+    // is a worse answer than one that renders without one.
+    console.warn('isolation check failed:', e);
+    return { ...report(), problem: String((e as Error)?.message ?? e) };
+  }
+}
+
+async function isolate(): Promise<IsolationReport> {
   if (crossOriginIsolated) return report();
   if (!('serviceWorker' in navigator))
     return { ...report(), problem: 'This browser has no service workers, so the headers cannot be set.' };
   // A worker that installed but didn't isolate us must not reload forever.
-  if (sessionStorage.getItem(RELOADED))
+  if (reloadFlag.get())
     return {
       ...report(),
       problem: 'The service worker is running but the page is still not isolated.',
@@ -56,7 +99,7 @@ export async function ensureIsolation(): Promise<IsolationReport> {
     if (!navigator.serviceWorker.controller)
       return { ...report(), problem: 'The service worker did not take control in time.' };
 
-    sessionStorage.setItem(RELOADED, '1');
+    reloadFlag.set();
     location.reload();
     return await never();
   } catch (e) {
