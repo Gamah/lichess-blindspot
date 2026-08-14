@@ -1,8 +1,8 @@
 // Chessground, wrapped so the rest of the app never touches it directly.
 //
-// Promotion is auto-queen. Underpromotion is a real puzzle answer roughly never,
-// and a promotion dialog would be the only piece of chrome on an otherwise bare
-// screen. If a puzzle's solution ever needs it, this is the place to fix.
+// The one bit of chrome on an otherwise bare screen is the promotion chooser,
+// which exists because auto-queening would make a puzzle whose answer is an
+// underpromotion unsolvable rather than merely hard.
 
 import { Chessground } from '@lichess-org/chessground';
 import type { Api } from '@lichess-org/chessground/api';
@@ -23,14 +23,16 @@ export class Board {
   private fen = '';
   private orientation: Color = 'white';
 
+  private readonly el: HTMLElement;
   private readonly onMove: (move: PlayedMove) => void;
 
   constructor(el: HTMLElement, onMove: (move: PlayedMove) => void) {
+    this.el = el;
     this.onMove = onMove;
     this.cg = Chessground(el, {
       coordinates: true,
       animation: { enabled: true, duration: 200 },
-      movable: { free: false, showDests: true, events: { after: (o, d) => this.afterMove(o, d) } },
+      movable: { free: false, showDests: true, events: { after: (o, d) => void this.afterMove(o, d) } },
       draggable: { showGhost: true },
       drawable: { enabled: true },
     });
@@ -76,17 +78,64 @@ export class Board {
     this.freeze();
   }
 
-  private afterMove(orig: Key, dest: Key): void {
+  private async afterMove(orig: Key, dest: Key): Promise<void> {
     const uci = orig + dest;
-    // Auto-queen: chessground has already moved the pawn, so ask chessops what
-    // the move actually was and re-set the board from its answer.
-    const played = applyUci(this.fen, uci) ?? applyUci(this.fen, uci + 'q');
+    // chessground has already moved the piece, so ask chessops what the move
+    // actually was and re-set the board from its answer. A move that is only
+    // legal with a promotion piece attached is exactly how we detect one.
+    let played = applyUci(this.fen, uci);
+    let full = uci;
+    if (!played) {
+      const piece = await this.askPromotion(dest);
+      if (!piece) return this.reset(); // cancelled
+      full = uci + piece;
+      played = applyUci(this.fen, full);
+    }
     if (!played) return this.reset();
     this.cg.set({ fen: played.after, turnColor: turnOf(played.after) });
     this.freeze();
-    this.onMove({ uci: played.san.includes('=') ? uci + 'q' : uci, san: played.san, after: played.after });
+    this.onMove({ uci: full, san: played.san, after: played.after });
+  }
+
+  /**
+   * Underpromotion is rare and a puzzle whose answer is one is rarer, but
+   * auto-queening makes such a puzzle unsolvable rather than hard, so it gets
+   * asked. Escape or a click outside cancels the move.
+   */
+  private askPromotion(dest: Key): Promise<'q' | 'r' | 'b' | 'n' | undefined> {
+    const colour = turnOf(this.fen);
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'promotion';
+      overlay.innerHTML = (['q', 'r', 'b', 'n'] as const)
+        .map(
+          p =>
+            `<button data-piece="${p}" title="${PIECE_NAMES[p]} on ${dest}">
+               <piece class="${PIECE_NAMES[p]} ${colour}"></piece>
+             </button>`,
+        )
+        .join('');
+
+      const done = (piece?: 'q' | 'r' | 'b' | 'n') => {
+        overlay.remove();
+        document.removeEventListener('keydown', onKey);
+        resolve(piece);
+      };
+      const onKey = (e: KeyboardEvent) => e.key === 'Escape' && done();
+
+      overlay.addEventListener('click', e => {
+        const piece = (e.target as HTMLElement).closest('button')?.dataset['piece'];
+        done(piece as 'q' | 'r' | 'b' | 'n' | undefined);
+      });
+      document.addEventListener('keydown', onKey);
+      // Inside .cg-wrap, because that is the ancestor the piece-set stylesheet
+      // keys its images off. Our own rules undo its absolute positioning.
+      (this.el.querySelector('.cg-wrap') ?? this.el).appendChild(overlay);
+    });
   }
 }
+
+const PIECE_NAMES = { q: 'queen', r: 'rook', b: 'bishop', n: 'knight' } as const;
 
 const turnOf = (fen: string): Color => (fen.split(' ')[1] === 'b' ? 'black' : 'white');
 

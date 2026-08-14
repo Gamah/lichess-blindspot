@@ -25,6 +25,13 @@ export interface AnalyseOptions {
   pov: Color;
   /** Skip everything before this ply, for leaving the opening alone. */
   fromPly?: number;
+  /**
+   * Asked about a ply the sweep flagged, before the expensive second search.
+   * The pipeline answers "yes, that is a book move" here, so an opening the
+   * engine dislikes costs one explorer lookup rather than two 1-second
+   * searches. 0-based index, like everything else in this file.
+   */
+  skipPly?: (index: number, step: ReplayStep) => Promise<boolean>;
   sweepDepth?: number;
   deepMovetime?: number;
   onProgress?: (done: number, total: number) => void;
@@ -90,6 +97,7 @@ export async function analyseGame(
     await check();
 
     const step = steps[i]!;
+    if (opts.skipPly && (await opts.skipPly(i, step))) continue;
     // Before the move: gives us `best` and the line to show. After it: the
     // eval the mistake actually led to.
     const before = await engine.analyse({ fen: step.fen, movetime });

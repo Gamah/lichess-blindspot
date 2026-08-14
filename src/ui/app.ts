@@ -239,7 +239,7 @@ export class App {
       void this.refill();
       return;
     }
-    this.solve = new Solve(puzzle);
+    this.solve = new Solve(puzzle, puzzle.openingUcis ?? []);
     this.attempts = 0;
     this.board?.set(puzzle.fen, puzzle.pov, true);
     this.setReveal('');

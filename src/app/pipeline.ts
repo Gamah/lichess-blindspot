@@ -6,9 +6,10 @@
 
 import { findCandidates } from '../analysis/candidates.ts';
 import { buildPuzzles, type Puzzle } from '../deck/build.ts';
-import { replay } from '../deck/positions.ts';
+import { replay, type ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
+import { OpeningBook } from '../lichess/explorer.ts';
 import { fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
 import { purgeIfTight, type Profile } from '../storage/db.ts';
 
@@ -39,6 +40,7 @@ export class Pipeline {
   private wake: (() => void) | undefined;
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private abort = new AbortController();
+  private readonly book = new OpeningBook();
 
   private readonly profile: Profile;
   /** Boots on first use: a game lichess already analysed needs no engine at all. */
@@ -155,33 +157,58 @@ export class Pipeline {
     if (moves.length < 4) return [];
     const steps = replay(moves, game.initialFen);
 
-    const fromPly = game.division?.middle;
+    // The opening is not cut off by ply. It is cut off by the masters
+    // explorer, as retro does it: an early move is dropped because masters have
+    // played it, not because it is early. When the explorer can't be reached
+    // `isBook` says yes and the effect is the old blanket cut.
+    const isBook = (index: number): Promise<boolean> => this.isBook(game, steps, index);
+
     // Games lichess has already analysed ship their evals in the export, and
     // cost us nothing.
     const analysis = game.analysis?.length
       ? game.analysis
-      : await this.engineAnalysis(steps, pov, fromPly);
+      : await this.engineAnalysis(steps, pov, isBook);
 
-    const candidates = findCandidates(moves, analysis, {
-      pov,
-      ...(fromPly !== undefined ? { fromPly } : {}),
-    });
-    return buildPuzzles(game.id, steps, candidates, pov, Date.now());
+    const candidates = findCandidates(moves, analysis, { pov });
+    const kept: typeof candidates = [];
+    for (const c of candidates) if (!(await isBook(c.index))) kept.push(c);
+
+    const puzzles = buildPuzzles(game.id, steps, kept, pov, Date.now());
+    // A book alternative is a right answer, not just a cancelled mistake, so
+    // the list travels with the puzzle for the solver to accept.
+    for (const puzzle of puzzles) {
+      // Only where the question means something. A middlegame position is not
+      // in any book, and asking costs a request to find that out.
+      if (!inOpening(game, puzzle.ply)) continue;
+      const ucis = await this.book.ucis(puzzle.fen);
+      if (ucis?.length) puzzle.openingUcis = ucis;
+    }
+    return puzzles;
+  }
+
+  private async isBook(game: ExportedGame, steps: readonly ReplayStep[], index: number): Promise<boolean> {
+    if (!inOpening(game, index + 1)) return false;
+    const step = steps[index];
+    return step ? this.book.contains(step.fen, step.uci) : false;
   }
 
   private async engineAnalysis(
-    steps: ReturnType<typeof replay>,
+    steps: readonly ReplayStep[],
     pov: 'white' | 'black',
-    fromPly: number | undefined,
+    isBook: (index: number) => Promise<boolean>,
   ) {
     this.emit({ engineBusy: true });
     const engine = await this.engine();
     return analyseGame(engine, steps, {
       pov,
-      ...(fromPly !== undefined ? { fromPly } : {}),
+      skipPly: index => isBook(index),
       signal: this.abort.signal,
       beforeEach: () => this.gate(),
       onProgress: (done, total) => this.emit({ current: done / total }),
     });
   }
 }
+
+/** retroCtrl's guard: standard chess, and before the middlegame if lichess said where that is. */
+const inOpening = (game: ExportedGame, ply: number): boolean =>
+  game.variant === 'standard' && (game.division?.middle === undefined || ply < game.division.middle);
