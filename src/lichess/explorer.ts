@@ -31,9 +31,21 @@ export async function mastersUcis(fen: string, signal?: AbortSignal): Promise<st
   return (data.moves ?? []).filter(m => m.white + m.draws + m.black > 1).map(m => m.uci);
 }
 
+/** Counters, so a browser can see whether any of this actually happened. */
+export interface BookStats {
+  /** Positions asked about (a cache hit is not a lookup). */
+  lookups: number;
+  /** Lookups the explorer answered. */
+  answered: number;
+  /** Lookups it refused or could not be reached for. */
+  failed: number;
+  lastError?: string;
+}
+
 export class OpeningBook {
   private readonly cache = new Map<string, Promise<string[] | undefined>>();
   private readonly fetcher: (fen: string) => Promise<string[]>;
+  readonly stats: BookStats = { lookups: 0, answered: 0, failed: 0 };
 
   constructor(fetcher: (fen: string) => Promise<string[]> = fen => mastersUcis(fen)) {
     this.fetcher = fetcher;
@@ -45,7 +57,18 @@ export class OpeningBook {
     if (hit) return hit;
     // A failure is cached as well as a hit: retrying once per candidate would
     // turn one explorer outage into a burst of requests.
-    const pending = this.fetcher(fen).catch(() => undefined);
+    this.stats.lookups++;
+    const pending = this.fetcher(fen).then(
+      ucis => {
+        this.stats.answered++;
+        return ucis;
+      },
+      (e: Error) => {
+        this.stats.failed++;
+        this.stats.lastError = String(e.message ?? e);
+        return undefined;
+      },
+    );
     this.cache.set(fen, pending);
     return pending;
   }

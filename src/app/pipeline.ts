@@ -9,7 +9,7 @@ import { buildPuzzles, type Puzzle } from '../deck/build.ts';
 import { replay, type ReplayStep } from '../deck/positions.ts';
 import { analyseGame, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
-import { OpeningBook } from '../lichess/explorer.ts';
+import { OpeningBook, type BookStats } from '../lichess/explorer.ts';
 import { ExportError, fetchGames, povOf, type ExportedGame } from '../lichess/export.ts';
 import { purgeIfTight, type Profile } from '../storage/db.ts';
 
@@ -63,6 +63,7 @@ export class Pipeline {
   private progress: Progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
   private abort = new AbortController();
   private readonly book = new OpeningBook();
+  private bookCancelled = 0;
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
   private exhausted = false;
@@ -133,6 +134,15 @@ export class Pipeline {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * What the opening explorer has been doing, and how many candidates it threw
+   * away. Otherwise there is no way to tell from a browser whether the book
+   * cancellation ran at all, or silently failed open.
+   */
+  bookStats(): BookStats & { cancelled: number } {
+    return { ...this.book.stats, cancelled: this.bookCancelled };
   }
 
   /** Why the deck is not filling, for the UI to say out loud. */
@@ -257,7 +267,10 @@ export class Pipeline {
 
     const candidates = findCandidates(moves, analysis, { pov });
     const kept: typeof candidates = [];
-    for (const c of candidates) if (!(await isBook(c.index))) kept.push(c);
+    for (const c of candidates) {
+      if (await isBook(c.index)) this.bookCancelled++;
+      else kept.push(c);
+    }
 
     const puzzles = buildPuzzles(game.id, steps, kept, pov, Date.now());
     // A book alternative is a right answer, not just a cancelled mistake, so

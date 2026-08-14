@@ -11,6 +11,7 @@ import type { Puzzle } from '../deck/build.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
+import type { BookStats } from '../lichess/explorer.ts';
 import { Solve } from '../solve/retro.ts';
 import { Profile, requestPersistence, storageEstimate, type SolveRecord } from '../storage/db.ts';
 import { recentUsernames, rememberUsername } from '../storage/prefs.ts';
@@ -245,6 +246,7 @@ export class App {
           ? `${mb(estimate.usage)} used of ${mb(estimate.quota)} available`
           : 'This browser will not say how much space it is using.'
       }</p>
+      <p class="line"><span class="label">Openings</span> ${bookLine(this.pipeline?.bookStats())}</p>
       <p class="hint">Games can always be fetched again. Puzzles and your ${solved} solved
         position${solved === 1 ? '' : 's'} cannot, and are never purged automatically.</p>
       <div class="controls">
@@ -561,6 +563,22 @@ export class App {
 
 const escape = (s: string): string =>
   s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+
+/**
+ * The masters explorer is the one part of this that cannot be checked from the
+ * machine it was written on — it answers 401 there — so the app has to be able
+ * to say for itself whether the lookups happened.
+ */
+function bookLine(stats: (BookStats & { cancelled: number }) | undefined): string {
+  if (!stats || !stats.lookups) return 'no opening positions looked up yet';
+  const failed = stats.failed
+    ? ` · <span class="bad">${stats.failed} failed${
+        stats.lastError ? ` (${escape(stats.lastError)})` : ''
+      }</span>`
+    : '';
+  return `${stats.lookups} looked up in the masters explorer, ${stats.answered} answered${failed} ·
+    ${stats.cancelled} candidate${stats.cancelled === 1 ? '' : 's'} dropped as book`;
+}
 
 const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 
