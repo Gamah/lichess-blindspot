@@ -94,6 +94,29 @@ export interface Settings {
    * better work alone.
    */
   rankMs: number;
+  /**
+   * How far back into the history to reach, in days; 0 for all of it.
+   *
+   * A *floor on fetching*, not on keeping: it is passed to the export as
+   * `since`, so the backwards paging stops at that date instead of at the first
+   * game someone ever played. Nothing already stored is affected — lowering it
+   * does not delete the older games it would no longer fetch, for the same
+   * reason `maxGames` doesn't.
+   *
+   * It is deliberately a date rather than a count, because the count is
+   * `maxGames` and two dials in the same units would be two answers to one
+   * question. "The last month" and "the last hundred games" are different
+   * things to want, and now each has the dial that says it.
+   */
+  historyDays: number;
+  /**
+   * How many games one export asks for. Not a rate: lichess is asked at most
+   * once every `EXPORT_GAP`, whatever this is, so a bigger batch means fewer
+   * requests reaching further per request — and a longer wait before the first
+   * of them is analysed, because they arrive together and the engine works
+   * through them one at a time.
+   */
+  batchSize: number;
 }
 
 /** Roughly what one stored game costs, for turning a count into a size. */
@@ -112,6 +135,21 @@ export const DEFAULT_SETTINGS: Settings = {
   threads: 0,
   maxGames: 0,
   rankMs: RANK_MOVETIME,
+  // Both defaults are what the app did before either dial existed: reach back
+  // for as long as there are games, twenty at a time.
+  historyDays: 0,
+  batchSize: 20,
+};
+
+/**
+ * The oldest `createdAt` worth fetching, or undefined for "all of it".
+ *
+ * `now` is a parameter for the same reason it is one in `deckStats`: a floor
+ * derived from the clock is untestable otherwise.
+ */
+export const historyFloor = (now: number = Date.now()): number | undefined => {
+  const days = settings().historyDays;
+  return days > 0 ? now - days * 24 * 60 * 60 * 1000 : undefined;
 };
 
 export const settings = (): Settings => ({

@@ -13,7 +13,7 @@
 //               delete — the only way to stop one coming round is to write
 //               down that it should not. Restoring is deleting that note.
 //
-// Plus `meta`, the paging cursor, and `schema`, the version stamp.
+// Plus `meta`, which holds both paging cursors, and `schema`, the version stamp.
 //
 // Puzzles are not stored at all: they are derived from a game whenever they are
 // wanted (see deck/derive.ts). So a game with our analysis in it is no longer
@@ -63,6 +63,20 @@ export interface HideRecord {
 export interface Meta {
   /** Paging cursor: the `until` to pass for the next, older batch. */
   until?: number;
+  /**
+   * The `createdAt` of the newest game ever taken in, and the second cursor:
+   * the forward one. `until` only ever moves backwards, so without this a
+   * returning player's new games are unreachable — the pipeline has paged past
+   * the newest game it ever saw and has no way forward. The session's first
+   * export asks lichess for everything `since` this instead.
+   *
+   * Optional because a store written before it existed has none, and absent
+   * means "work it out from the newest game held" rather than "the beginning of
+   * time" — see `Pipeline.seedNewest`. It is advanced only when a refresh has
+   * caught all the way up, so an interrupted one re-does itself rather than
+   * leaving a hole nothing would ever look in.
+   */
+  newest?: number;
   /** Games whose analysis has been done, engine or lichess, and turned into puzzles. */
   analysed: string[];
   /** Games we looked at and found nothing in — so we don't re-analyse them. */

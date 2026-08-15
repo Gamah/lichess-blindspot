@@ -44,7 +44,25 @@ export class ExportError extends Error {
 
 export interface FetchOptions {
   max?: number;
-  until?: number; // ms, for paging backwards through history
+  /**
+   * Only games started **before** this, in ms. The cursor for paging backwards:
+   * ask again from just before the oldest game of the last batch.
+   */
+  until?: number;
+  /**
+   * Only games started **at or after** this, in ms. Two jobs, and they are the
+   * same filter from opposite ends:
+   *
+   * - the forward refresh — "anything since the newest game I hold" — which is
+   *   the only way a returning player's new games are ever seen, since `until`
+   *   has long since paged past them;
+   * - the "how far back" floor, which stops the backwards paging at a date
+   *   rather than at the beginning of someone's lichess career.
+   *
+   * Both may be set at once, and are, on every backwards batch once a floor is
+   * chosen: `since` is the floor and `until` is where this batch resumes.
+   */
+  since?: number;
   signal?: AbortSignal;
 }
 
@@ -67,6 +85,7 @@ export async function* fetchGames(username: string, opts: FetchOptions = {}): As
   params.set('clocks', 'false');
   params.set('pgnInJson', 'false');
   if (opts.until !== undefined) params.set('until', String(opts.until));
+  if (opts.since !== undefined) params.set('since', String(opts.since));
 
   const res = await fetch(url, {
     headers: { Accept: 'application/x-ndjson' },

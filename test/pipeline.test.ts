@@ -275,6 +275,127 @@ test('each batch reaches further back, so the deck is not capped at 20 games', a
   }
 });
 
+/** A batch of the NDJSON the export sends, newest-first as lichess sends it. */
+const batchOf = (games: readonly (readonly [string, number])[]) =>
+  new Response(
+    games
+      .map(([id, createdAt]) =>
+        JSON.stringify({
+          id,
+          createdAt,
+          variant: 'standard',
+          players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+          moves: 'e4 e5 Nf3 Nc6',
+        }),
+      )
+      .join('\n'),
+  );
+
+const param = (url: string, name: string): string | null => new URL(url).searchParams.get(name);
+
+// The bug half of the row: `until` only ever moved backwards, so a returning
+// player's newly played games were unreachable — the pipeline had paged past the
+// newest game it ever saw and had no way forward.
+test('the session looks for new games first, and only then reaches further back', async () => {
+  const fetch = stubFetch(n => (n === 1 ? batchOf([['new1', 9_000]]) : batchOf([['old1', 2_000]])));
+  const now = { at: 10_000_000 };
+  const store = fakeStore();
+  // A store from a previous session: paged back to 4000, newest ever seen 5000.
+  await store.setMeta({ analysed: [], fetched: [], until: 4_999, newest: 5_000 });
+  try {
+    const { handlers } = events();
+    const pipeline = new Pipeline(store, flatEngine, handlers, () => now.at);
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[0]!, 'since'), '5001', 'anything since the newest held');
+    assert.equal(param(fetch.state.urls[0]!, 'until'), null, 'and no backwards cursor on it');
+    assert.equal(pipeline.refresh().found, 1);
+
+    // The refresh caught up in one batch, so the next export is the old
+    // backwards paging, resumed from exactly where it was.
+    now.at += 31_000;
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[1]!, 'until'), '4999');
+    assert.equal(param(fetch.state.urls[1]!, 'since'), null, 'no floor set, so no floor asked for');
+    assert.equal((await store.meta()).newest, 9_000, 'the forward cursor moved with the new game');
+  } finally {
+    fetch.restore();
+  }
+});
+
+// Someone who has not been here for a month has more new games than one batch.
+test('a refresh bigger than a batch pages down through it before the cursor moves', async () => {
+  saveSettings({ batchSize: 2 });
+  const fetch = stubFetch(n =>
+    n === 1
+      ? batchOf([
+          ['new1', 9_000],
+          ['new2', 8_000],
+        ])
+      : batchOf([['new3', 7_000]]),
+  );
+  const now = { at: 11_000_000 };
+  const store = fakeStore();
+  await store.setMeta({ analysed: [], fetched: [], until: 4_999, newest: 5_000 });
+  try {
+    const { handlers } = events();
+    const pipeline = new Pipeline(store, flatEngine, handlers, () => now.at);
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[0]!, 'max'), '2');
+    assert.equal(
+      (await store.meta()).newest,
+      5_000,
+      'a full batch is not the whole answer, so the cursor stays put — moving it ' +
+        'would leave the games below this batch in a window nothing looks at again',
+    );
+
+    now.at += 31_000;
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[1]!, 'since'), '5001', 'the same window');
+    assert.equal(param(fetch.state.urls[1]!, 'until'), '7999', 'resumed below the last batch');
+    assert.equal((await store.meta()).newest, 9_000, 'caught up, so now it moves — to the newest');
+    assert.equal(pipeline.refresh().found, 3);
+
+    // And with the refresh done, the third export is backwards again.
+    now.at += 31_000;
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[2]!, 'until'), '4999');
+  } finally {
+    fetch.restore();
+    saveSettings({ batchSize: 20 });
+  }
+});
+
+test('“how far back” is a floor on the fetch, and stopping at it says so', async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = { at: 100 * day };
+  saveSettings({ historyDays: 30 });
+  const fetch = stubFetch(() => batchOf([]));
+  try {
+    const { handlers } = events();
+    const store = fakeStore();
+    const pipeline = new Pipeline(store, flatEngine, handlers, () => now.at);
+    await pipeline.run();
+    assert.equal(param(fetch.state.urls[0]!, 'since'), String(70 * day));
+    assert.equal(
+      pipeline.status(),
+      'horizon',
+      'we stopped where we were told to, which is not the same as lichess running out',
+    );
+
+    // Lowering the floor makes the games beyond it reachable again.
+    saveSettings({ historyDays: 0 });
+    pipeline.recheckReach();
+    now.at += 31_000;
+    await pipeline.run();
+    assert.equal(fetch.state.calls, 2);
+    assert.equal(param(fetch.state.urls[1]!, 'since'), null);
+    assert.equal(pipeline.status(), 'exhausted', 'and now it really is the end of the history');
+  } finally {
+    fetch.restore();
+    saveSettings({ historyDays: 0 });
+  }
+});
+
 // The expensive thing is the eval array, and it is the only thing kept: the
 // puzzles handed to the deck are derived from the game and never written.
 test('what the engine works out is written back onto the game', async () => {
