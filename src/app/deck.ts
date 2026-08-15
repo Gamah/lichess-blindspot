@@ -44,6 +44,24 @@ export class Deck {
   }
 
   /**
+   * Take over a puzzle that is already on screen — for a deck rebuilt while
+   * someone is looking at one.
+   *
+   * The rebuild is not rare: every Settings dial that shapes the deck runs it,
+   * and a puzzle is a view over a stored game, so the *same* position comes out
+   * of the new build sitting in `pending` with nothing recording that it is
+   * currently being solved. Skip would then push a duplicate (`requeue` catches
+   * that one), and Next could serve the position that is already on the board.
+   * Telling the new deck what the old one was serving is the fix: it leaves
+   * `pending` and counts as known, exactly as if `next()` had dealt it.
+   */
+  serve(puzzle: Puzzle): void {
+    this.served = puzzle;
+    this.known.add(puzzle.id);
+    this.pending = this.pending.filter(p => p.id !== puzzle.id);
+  }
+
+  /**
    * Put one back, unsolved — for "skip", which is not "solved". Ignores a
    * puzzle that is already waiting: the deck can be rebuilt from storage while
    * one is on screen, and that copy would otherwise be skipped into a duplicate.

@@ -690,6 +690,12 @@ export class App {
     // One add, not one per game: `add` reshuffles what is left each time, and
     // the shuffle is what keeps two positions from one game apart.
     deck.add(games.flatMap(game => puzzlesFromGame(game, profile.username, { maxPerGame })));
+    // Whatever is on the board is still on the board. Without this the new deck
+    // holds the served position in `pending` with nothing marking it served, so
+    // Next could deal the position already in front of them and Skip has to be
+    // defended against duplicating it.
+    const served = this.deck.current();
+    if (served) deck.serve(served);
     this.deck = deck;
   }
 

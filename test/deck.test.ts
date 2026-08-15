@@ -81,6 +81,23 @@ test('a skipped puzzle goes back, at the end', () => {
   assert.notEqual(deck.next()!.id, skipped.id, 'not served again immediately');
 });
 
+// Every Settings dial that shapes the deck rebuilds it, and a puzzle is a view
+// over a stored game — so the position on the board comes straight back out of
+// the new build, and the new deck has no idea it is already being solved.
+test('a rebuilt deck can be told what is already on the board', () => {
+  const all = [puzzle('a', 1), puzzle('b', 1), puzzle('c', 1)];
+  const old = new Deck(seeded(5));
+  old.add(all);
+  const served = old.next()!;
+
+  const rebuilt = new Deck(seeded(5));
+  rebuilt.add(all);
+  rebuilt.serve(served);
+  assert.equal(rebuilt.current()!.id, served.id);
+  assert.equal(rebuilt.unsolvedCount(), 2, 'it is not waiting as well as being solved');
+  assert.notEqual(rebuilt.next()!.id, served.id, 'and Next cannot deal it again');
+});
+
 test('a candidate becomes a puzzle holding the position before the mistake', () => {
   const moves = ['e4', 'e5', 'Nf3', 'Nc6', 'Ng5', 'Nf6', 'Nxf7', 'Kxf7'];
   const steps = replay(moves);
