@@ -66,8 +66,9 @@ export const fineprint = (): string => `
  *
  * Same explanation as the landing page, plus the two things a person only
  * meets *after* they start solving and so cannot have read on the way in: what
- * the numbered arrows mean when a position is revealed, and why the machine is
- * working. `battery` is the phone warning, already rendered, or empty.
+ * the numbered arrows mean when a position is revealed, what the Deck button
+ * does, and why the machine is working. `battery` is the phone warning, already
+ * rendered, or empty.
  */
 export const aboutPanel = (battery: string): string => `
   <div class="panel-head">
@@ -88,6 +89,16 @@ export const aboutPanel = (battery: string): string => `
   <p>The numbers are the ranking; the colour is only whether the move beats what was played.
     That is deliberate: the reveal looks the same on every difficulty, so a move does not
     change colour because of a setting.</p>
+
+  <h2>Looking back at what you have solved</h2>
+  <p><strong>Deck</strong>, in the bar above, lists every position you have solved — newest
+    first, with the move you played in the game, the swing it cost, how the solve went, and a
+    link into the game on lichess. Any of them can be put back on the board; a replay is just
+    a replay, so it does not change what is recorded and the position does not rejoin the
+    shuffle. Settings can put them <em>all</em> back at once instead.</p>
+  <p>The positions still waiting are only counted there, never listed. That is the whole idea
+    of the app rather than something missing: an unsolved position is supposed to arrive with
+    nothing attached to it, and a list would be a list of clues.</p>
 
   <h2>Why this works the processor</h2>
   <p>Every position is searched before anyone is shown it — a quick pass over the whole game

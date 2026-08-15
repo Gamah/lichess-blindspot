@@ -62,6 +62,14 @@ measured no better, because the tail of that list is genuinely uncertain rather
 than underfunded. Settings has a "thinking time per position" dial anyway, if
 you want to spend more or, on a phone, less.
 
+**The deck can be looked at, one half of it anyway.** The *Deck* button lists
+every position you have solved — the move you played, what it cost, how the
+solve went, and a link into the game — and will put any of them back on the
+board as a replay, which changes nothing that was recorded. The positions still
+waiting are only counted, never listed: an unsolved position is supposed to
+arrive with nothing attached to it, so there is nothing to list that would not
+give it away.
+
 **This uses your processor, and it is meant to.** Blindspot is a chess engine
 running in a tab: every position is searched before you see it, so a long
 history means minutes of sustained load the first time through. On a phone that

@@ -566,12 +566,51 @@ which the landing page and the About panel both assemble. Two copies of an
 explanation drift, and the one behind a button is the one nobody would notice
 going stale.
 
-About carries two things the landing page cannot, because they are only met
-*after* solving starts: what the numbered arrows mean, and why the machine is
-working. `#panel` is one element in two modes (`App.panel` says which), so
-opening one closes the other; `panel.about` is the class that gives prose a
-measure. Nothing in `about.ts` interpolates anything a person typed, and so
-nothing in it escapes anything — keep it that way.
+About carries three things the landing page cannot, because they are only met
+*after* solving starts: what the numbered arrows mean, what Deck does, and why
+the machine is working. `#panel` is one element in **three** modes (`App.panel`
+says which, `PanelKind`), so opening one closes the others; `panel.about` is the
+class that gives prose a measure. Nothing in `about.ts` interpolates anything a
+person typed, and so nothing in it escapes anything — keep it that way.
+
+## The deck, looked at rather than dealt from
+
+The **Deck** panel is the third tenant of `#panel`, and **the rule at the top of
+`ui/app.ts` decides its entire shape**: until a position is solved, nothing may
+say where it came from. So its two halves cannot be listed the same way, and the
+asymmetry is the design rather than an unfinished list.
+
+- **Waiting: a count and a spread, no rows.** `waitingSummary` (`src/deck/review.ts`)
+  returns how many positions are pending and how many games they span, and that
+  is all that may be said — naming an unsolved position is exactly the leak the
+  app exists to prevent, and a list of positions that *cannot* be told apart is
+  what the shuffle already is. The panel says so in a sentence, because a
+  missing list otherwise reads as a missing feature.
+- **Solved: everything.** `reviewRows` joins the `solve:` records to the derived
+  puzzles and the stored games, newest solve first. `renderReveal` has already
+  discharged the rule for these.
+
+Two things worth keeping:
+
+- **A solve record can outlive its position, and the row survives that.** A
+  `solve:` key is `gameId:ply`, so purging the game or lowering `maxPerGame`
+  past a ply leaves a record with nothing to derive from. `ReviewRow.puzzle` is
+  optional for exactly that, and the row still renders — quietly dropping
+  someone's history is worse than a row that says the position is gone. It is
+  also why the "Bring back N" count in Settings can exceed the replayable rows.
+- **A replay is not a solve.** `App.replaying` is set by `App.replay` and
+  cleared by `nextPuzzle`; `finish` skips `recordSolve` while it is set. Without
+  that, going back over a position you found first time and then pressing Show
+  solution would overwrite the record with "looked at the answer", which is a
+  worse account of what happened than none. The position is already out of the
+  shuffle, so the write would buy nothing either. `App.present` is the shared
+  half of `nextPuzzle` and `replay`: the two differ only in what the deck did
+  first and whether the result is written down, never in what is shown.
+
+`src/ui/format.ts` exists because of this panel: `escape`, `showEval`, `gameUrl`
+and `moveNumber` were private to `app.ts` while the reveal was the only screen
+allowed to know a position's origin. The deck panel is the second, and it says
+the same things, so they moved rather than being written twice.
 
 **How an existing user is told a setting exists.** The same shape as the schema
 reset, and the only other thing in the app that gates the front door:

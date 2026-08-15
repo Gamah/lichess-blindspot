@@ -39,7 +39,10 @@ import {
   settings,
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
+import { reviewRows, waitingSummary } from '../deck/review.ts';
 import { aboutPanel, fineprint, pitch, steps } from './about.ts';
+import { escape, gameUrl, moveNumber, showEval } from './format.ts';
+import { deckPanel } from './review.ts';
 import { Board, type PlayedMove } from './board.ts';
 import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
@@ -54,6 +57,9 @@ const JUDGE_MOVETIME = 1000;
  */
 const BUSY_WAIT = 60_000;
 
+/** The one panel element has three tenants; `App.panel` says which is in. */
+type PanelKind = 'settings' | 'about' | 'deck';
+
 export class App {
   private profile: Profile | undefined;
   private pipeline: Pipeline | undefined;
@@ -65,8 +71,15 @@ export class App {
    */
   private derived = new Map<string, { key: string; puzzles: Puzzle[] }>();
   private board: Board | undefined;
-  /** Which of the two things the one panel is currently showing, if it is open. */
-  private panel: 'settings' | 'about' | undefined;
+  /** Which of the three things the one panel is currently showing, if it is open. */
+  private panel: PanelKind | undefined;
+  /**
+   * The position on the board is a replay of one already solved, picked out of
+   * the deck panel. It must not be recorded again: a replay that went badly
+   * would otherwise overwrite "found it, first try" with "looked at the
+   * answer", which is a worse record of what happened than no record.
+   */
+  private replaying = false;
   /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
   private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
@@ -197,6 +210,7 @@ export class App {
       <header class="topbar">
         <span class="who">${escape(this.profile?.username ?? '')}</span>
         <span class="spacer"></span>
+        <button id="deck" class="quiet">Deck</button>
         <button id="about" class="quiet">About</button>
         <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
@@ -227,10 +241,11 @@ export class App {
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
     (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.togglePanel('settings');
     (this.root.querySelector('#about') as HTMLButtonElement).onclick = () => void this.togglePanel('about');
+    (this.root.querySelector('#deck') as HTMLButtonElement).onclick = () => void this.togglePanel('deck');
   }
 
   /**
-   * The one panel, in one of two modes.
+   * The one panel, in one of three modes.
    *
    * About is here because there is otherwise **no way back to the explanation**
    * once a username has been typed: the landing page is reachable only through
@@ -238,29 +253,83 @@ export class App {
    * arrives with a name already remembered never sees it at all. Its copy is
    * shared with the landing page rather than written twice — see `about.ts`.
    */
-  private async togglePanel(kind: 'settings' | 'about'): Promise<void> {
+  private async togglePanel(kind: PanelKind): Promise<void> {
     const panel = this.root.querySelector('#panel') as HTMLElement | null;
     if (!panel || !this.profile) return;
-    // The button that opened it also closes it; the other button switches.
-    if (!panel.hidden && this.panel === kind) {
-      panel.hidden = true;
-      this.panel = undefined;
-      return;
-    }
+    // The button that opened it also closes it; the other buttons switch.
+    if (!panel.hidden && this.panel === kind) return this.closePanel();
     this.panel = kind;
     panel.hidden = false;
     // Prose wants a narrower measure than a settings grid does.
     panel.className = kind === 'about' ? 'panel about' : 'panel';
     if (kind === 'about') {
       panel.innerHTML = aboutPanel(batteryWarning());
-      (panel.querySelector('#close') as HTMLButtonElement).onclick = () => {
-        panel.hidden = true;
-        this.panel = undefined;
-      };
+      this.wireClose(panel);
       panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
       return;
     }
+    if (kind === 'deck') return this.renderDeckPanel(panel);
     await this.renderSettings(panel);
+  }
+
+  private closePanel(): void {
+    const panel = this.root.querySelector('#panel') as HTMLElement | null;
+    if (panel) panel.hidden = true;
+    this.panel = undefined;
+  }
+
+  private wireClose(panel: HTMLElement): void {
+    (panel.querySelector('#close') as HTMLButtonElement).onclick = () => this.closePanel();
+  }
+
+  /**
+   * The deck, looked at rather than dealt from. Both halves come out of what is
+   * already in memory — the derivation cache and the solve records — so opening
+   * this costs one IndexedDB read and no engine time.
+   *
+   * The asymmetry between the halves is deliberate and is explained where the
+   * rows are built (`deck/review.ts`): the unsolved ones are a count, because
+   * saying anything else about a position nobody has solved is the leak this
+   * whole app is arranged to avoid.
+   */
+  private async renderDeckPanel(panel: HTMLElement): Promise<void> {
+    const profile = this.profile;
+    if (!profile) return;
+    const [solves, games] = await Promise.all([profile.solves(), profile.games()]);
+    // Switch player is one click and two reads are not instant.
+    if (this.profile !== profile || this.panel !== 'deck') return;
+    const puzzles = [...this.derived.values()].flatMap(entry => entry.puzzles);
+    const rows = reviewRows(solves, puzzles, games);
+    panel.innerHTML = deckPanel(waitingSummary(this.deck.waiting()), rows);
+    this.wireClose(panel);
+    for (const button of panel.querySelectorAll<HTMLButtonElement>('button[data-review]')) {
+      const id = button.dataset.review!;
+      button.onclick = () => void this.replay(id);
+    }
+  }
+
+  /**
+   * Put a solved position back on the board. It stays solved: the deck already
+   * counts it that way, `serve` only makes it the thing on screen, and `finish`
+   * writes nothing while `replaying` is set — see the field.
+   *
+   * Whatever was on the board goes back in the queue, unsolved, exactly as Skip
+   * leaves it. `requeue` ignores a puzzle that is already solved, so replaying
+   * one replay after another cannot pile them into `pending`.
+   */
+  private async replay(puzzleId: string): Promise<void> {
+    const puzzle = [...this.derived.values()]
+      .flatMap(entry => entry.puzzles)
+      .find(p => p.id === puzzleId);
+    if (!puzzle) return;
+    const current = this.deck.current();
+    if (current && current.id !== puzzleId) this.deck.requeue(current);
+    this.closePanel();
+    this.awaitingPuzzles = false;
+    clearTimeout(this.exhaustedTimer);
+    this.deck.serve(puzzle);
+    this.replaying = true;
+    await this.present(puzzle);
   }
 
   /** Back to the landing screen, with the background work stopped. */
@@ -275,6 +344,7 @@ export class App {
     // sides — so it belongs to the profile, not to the app.
     this.derived = new Map();
     this.solve = undefined;
+    this.replaying = false;
     this.board = undefined;
     this.progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
     this.unlocked = false;
@@ -368,8 +438,10 @@ export class App {
       <div class="setting">
         <span class="label-text">Solved positions</span>
         <button id="unsolve" class="quiet">Bring back ${solved}</button>
-        <p class="hint">Solved positions leave the shuffle but stay stored. This puts them back
-          in, which is a way to revisit them without re-analysing anything.</p>
+        <p class="hint">Solved positions leave the shuffle but stay stored. This puts them all
+          back in, and re-solving them is recorded as solving them. To go back over one without
+          disturbing any of that, use Deck in the bar above — it lists them and will put a
+          single position back on the board as a replay.</p>
       </div>
 
       <div class="setting">
@@ -717,6 +789,17 @@ export class App {
       void this.refill();
       return;
     }
+    this.replaying = false;
+    await this.present(puzzle);
+  }
+
+  /**
+   * Put a position on the board and start a solve on it. Shared by dealing the
+   * next one and by replaying a solved one out of the deck panel — the two
+   * differ only in what the deck did beforehand and in whether the result is
+   * written down, never in what is shown.
+   */
+  private async present(puzzle: Puzzle): Promise<void> {
     this.solve = new Solve(puzzle);
     this.attempts = 0;
     this.setReveal('');
@@ -818,12 +901,17 @@ export class App {
       result === 'win' ? solve.lastAttempt?.uci : undefined,
     );
     this.deck.markSolved([solve.puzzle.id]);
-    await this.profile.recordSolve({
-      puzzleId: solve.puzzle.id,
-      at: Date.now(),
-      result,
-      attempts: this.attempts,
-    });
+    // A replay is not a solve. Recording it would overwrite what actually
+    // happened the first time — "found it, first try" becoming "looked at the
+    // answer" is a worse record than none — and the position is already out of
+    // the shuffle, so there is nothing else the write would achieve.
+    if (!this.replaying)
+      await this.profile.recordSolve({
+        puzzleId: solve.puzzle.id,
+        at: Date.now(),
+        result,
+        attempts: this.attempts,
+      });
     await this.renderReveal(solve.puzzle);
     this.toggleNext(true);
     this.renderCounters();
@@ -887,7 +975,7 @@ export class App {
 
   private async renderReveal(puzzle: Puzzle): Promise<void> {
     const game = await this.profile?.game(puzzle.gameId);
-    const move = Math.ceil(puzzle.ply / 2);
+    const move = moveNumber(puzzle.ply);
     this.setReveal(`
       <h2>${escape(puzzle.played.san)} was played</h2>
       <p class="line"><span class="label">Engine</span> ${escape(puzzle.pv.slice(0, 6).join(' '))}</p>
@@ -1002,9 +1090,6 @@ export class App {
 
 // --- formatting -------------------------------------------------------------
 
-const escape = (s: string): string =>
-  s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-
 const DIFFICULTY_NAMES: Record<Difficulty, string> = {
   easy: 'Easy',
   medium: 'Medium',
@@ -1105,18 +1190,6 @@ function threadOptions(): string {
     ),
   ].join('');
 }
-
-const showEval = (e: { cp?: number; mate?: number }): string =>
-  e.mate !== undefined ? `#${e.mate}` : `${e.cp! > 0 ? '+' : ''}${(e.cp! / 100).toFixed(1)}`;
-
-/**
- * `puzzle.ply` is the ply of the *mistake*, and lichess' `#n` fragment selects
- * the position **after** ply n — so linking it lands one move past the puzzle,
- * with the blunder already on the board. `ply - 1` opens the position that was
- * handed out, and stepping forward once is then the reveal.
- */
-const gameUrl = (id: string, puzzle: Puzzle): string =>
-  `https://lichess.org/${escape(id)}/${puzzle.pov}#${Math.max(0, puzzle.ply - 1)}`;
 
 function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
   const them = puzzle.pov === 'white' ? game.players.black : game.players.white;

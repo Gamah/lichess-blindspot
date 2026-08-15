@@ -511,3 +511,46 @@ button.danger:hover {
 .panel.about .steps h2 {
   margin: 0 0 0.35rem;
 }
+
+/* --- the deck panel --- */
+
+/* One solved position per row: what happened on the left, the replay button on
+   the right. The panel is already scrolled, so the list is not — a scrollbox
+   inside a scrollbox is worse than a long page. */
+.review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.review-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.15rem 1rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.review-main {
+  grid-column: 1;
+}
+
+.review-meta {
+  grid-column: 1;
+  font-size: 0.9rem;
+  color: var(--dim);
+}
+
+.review-row button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.review-row.gone {
+  grid-template-columns: 1fr;
+}
+
+.review-meta a {
+  color: inherit;
+}

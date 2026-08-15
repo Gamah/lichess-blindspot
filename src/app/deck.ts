@@ -75,6 +75,15 @@ export class Deck {
     return this.pending.length;
   }
 
+  /**
+   * What is still waiting, in the order it will be dealt. For the deck panel,
+   * which counts it and the games it spans — and only that: naming an unsolved
+   * position is the one thing this app must not do.
+   */
+  waiting(): readonly Puzzle[] {
+    return this.pending;
+  }
+
   solvedCount(): number {
     return this.solved.size;
   }
