@@ -587,13 +587,22 @@ this is where the distinction gets made.** It is about **where a position came
 from** — the game, the opponent, the date, the move number, the evaluation —
 not about the position itself, which is handed over in full the moment the
 puzzle is dealt. So *both* halves of the deck are shown as boards, and they
-differ only in what goes around them: an unsolved card carries the position and
-"White to play" and nothing else, a solved one carries everything, because
-`renderReveal` has already said all of it once. An earlier version of this
-withheld the unsolved half entirely, reasoning from the strong reading; that was
-wrong, and the argument against it is that a dozen boards side by side tell you
-no more than each one does alone, because there is nothing shared between them
-to read off.
+differ only in what goes around them. An earlier version withheld the unsolved
+half entirely, reasoning from the strong reading; that was wrong, and the
+argument against it is that a dozen boards side by side tell you no more than
+each one does alone, because there is nothing shared between them to read off.
+
+**The test for what an unsolved card may carry is "does the solving screen show
+this the moment the position is dealt".** That is the whole rule, and it admits
+more than it sounds like: the position, the king in check, the squares the
+opponent's move came from and went to (`puzzle.intro.uci`, the `lastMove`
+`Board.present` leaves behind), the **red arrow on the move played in the game**
+(the documented exception at the top of `ui/app.ts`), and those same facts in
+words — whose turn, what the opponent just played, whether you are in check.
+What it excludes is unchanged: the game, the opponent, the date, the move
+number, the evaluation, the swing. `miniBoard` takes a `MiniMarks` and the
+caption is `waitingText`; if either grows, apply that test rather than a
+judgment about spoilers.
 
 Both halves page at `PAGE_SIZE` (12), independently, because each card is a
 chessground instance and a few hundred of them built on open is not a dialog

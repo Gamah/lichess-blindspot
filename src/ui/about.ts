@@ -92,9 +92,10 @@ export const aboutPanel = (battery: string): string => `
 
   <h2>Looking through the deck</h2>
   <p><strong>Deck</strong>, in the bar above, opens every position you have over the board you
-    are solving on. The ones still waiting are shown as bare boards — the position and which
-    side is to play, and nothing else, exactly as one arrives when it is dealt. "Solve this"
-    jumps the queue rather than waiting for the shuffle to reach it.</p>
+    are solving on. The ones still waiting are shown exactly as they arrive when they are
+    dealt — the position, the squares the opponent's move came from, and the red arrow on the
+    move that lost it — and nothing about the game behind them. "Solve this" jumps the queue
+    rather than waiting for the shuffle to reach it.</p>
   <p>Solved positions are shown with everything: the move you played, what it cost, how the
     solve went, and a link into the game on lichess. Any of them can be put back on the board.
     That is a replay — it does not change what was recorded and the position does not rejoin

@@ -332,7 +332,10 @@ export class App {
     dialog.innerHTML = deckPanel(waitingSummary(waiting), waiting, rows, this.deckPages);
     (dialog.querySelector('#close') as HTMLButtonElement).onclick = () => dialog.close();
     for (const el of dialog.querySelectorAll<HTMLElement>('.mini[data-fen]'))
-      miniBoard(el, el.dataset.fen!, el.dataset.pov === 'black' ? 'black' : 'white');
+      miniBoard(el, el.dataset.fen!, el.dataset.pov === 'black' ? 'black' : 'white', {
+        ...(el.dataset.played ? { played: el.dataset.played } : {}),
+        ...(el.dataset.last ? { last: el.dataset.last } : {}),
+      });
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-review]'))
       button.onclick = () => void this.fromDeck(button.dataset.review!, true);
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-serve]'))

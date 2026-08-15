@@ -378,23 +378,41 @@ const turnOf = (fen: string): Color => (fen.split(' ')[1] === 'b' ? 'black' : 'w
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
+/** What a mini board draws besides the position. All optional, all spoiler-free. */
+export interface MiniMarks {
+  /** The move played in the game, drawn in red — the same arrow `mark` draws. */
+  played?: string;
+  /** The move that led here, highlighted as chessground's last move. */
+  last?: string;
+}
+
 /**
  * A small, dead board for the deck dialog — no moves, no coordinates, no
- * drawing. Chessground rather than hand-rolled markup because it already knows
- * how to turn a FEN into pieces and how to flip; a dozen view-only instances
- * cost nothing next to the one that is being played on.
+ * drawing by hand. Chessground rather than hand-rolled markup because it
+ * already knows how to turn a FEN into pieces, how to flip, and how to mark a
+ * king in check; a dozen view-only instances cost nothing next to the one that
+ * is being played on.
  *
- * The position and nothing else. That is the whole of what may be shown for an
- * unsolved puzzle — see the note in `deck/review.ts` — and it is also all a
- * thumbnail is any good at.
+ * **It shows exactly what the solving screen shows the moment a position is
+ * dealt, and nothing more**: the position, the check, the squares the
+ * opponent's move came from and went to, and the red arrow on the move played
+ * in the game. That last one is the deliberate exception documented at the top
+ * of `ui/app.ts` — it is the one answer that is always wrong, so it costs
+ * nothing to show and saves guesses to anyone who does not remember the game.
+ * Everything withheld from an unsolved position is withheld here too.
  */
-export function miniBoard(el: HTMLElement, fen: string, orientation: Color): void {
-  Chessground(el, {
+export function miniBoard(el: HTMLElement, fen: string, orientation: Color, marks: MiniMarks = {}): void {
+  const cg = Chessground(el, {
     fen,
     orientation,
     viewOnly: true,
     coordinates: false,
+    check: isCheck(fen),
+    ...(marks.last ? { lastMove: [marks.last.slice(0, 2), marks.last.slice(2, 4)] as [Key, Key] } : {}),
     animation: { enabled: false, duration: 0 },
-    drawable: { enabled: false, visible: false },
+    // Auto-shapes, not shapes: the same rule as the reveal. Nothing can press
+    // this board, but `drawable.enabled: false` leaves `shapes` unrendered.
+    drawable: { enabled: false, visible: true, brushes: RANK_BRUSHES as unknown as DrawBrushes },
   });
+  if (marks.played) cg.setAutoShapes([arrow(marks.played, 'red')]);
 }

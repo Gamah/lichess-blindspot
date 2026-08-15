@@ -17,6 +17,7 @@
 // looks the position up.
 
 import type { Puzzle } from '../deck/build.ts';
+import { isCheck } from '../deck/positions.ts';
 import type { ReviewRow, WaitingSummary } from '../deck/review.ts';
 import { escape, gameUrl, moveNumber, showEval } from './format.ts';
 
@@ -48,9 +49,33 @@ const side = (pov: 'white' | 'black'): string => (pov === 'white' ? 'White' : 'B
 /**
  * The board on a card. `App` mounts a real one into this after the markup
  * lands; the attributes are the whole of what it needs.
+ *
+ * `played` and `last` are the red arrow and the last-move squares, which are
+ * exactly what the solving screen puts on a position the moment it is dealt —
+ * so a card showing them withholds nothing extra and gives nothing extra away.
  */
-const mini = (fen: string, pov: 'white' | 'black'): string =>
-  `<div class="mini" data-fen="${escape(fen)}" data-pov="${pov}"></div>`;
+const mini = (p: Puzzle): string =>
+  `<div class="mini" data-fen="${escape(p.fen)}" data-pov="${p.pov}"` +
+  ` data-played="${escape(p.played.uci)}"` +
+  (p.intro ? ` data-last="${escape(p.intro.uci)}"` : '') +
+  `></div>`;
+
+/**
+ * The caption on an unsolved card: what the board already says, in words, so
+ * the list can be scanned without reading twelve positions.
+ *
+ * Everything here is on the board in front of you — whose turn it is, the move
+ * that led here, whether the king is in check. Nothing about the game it came
+ * from, which is the line the solving screen draws and this one keeps.
+ */
+function waitingText(p: Puzzle): string {
+  const you = side(p.pov);
+  const them = side(p.pov === 'white' ? 'black' : 'white');
+  const check = isCheck(p.fen) ? ` <span class="bad">In check.</span>` : '';
+  const intro = p.intro ? ` ${them} played ${escape(p.intro.san)}.` : '';
+  return `<strong>${you} to play.</strong>${intro}${check}
+    <span class="dim">Red is the move that lost it — find something better.</span>`;
+}
 
 /**
  * An unsolved position, and the reason this is allowed to exist at all.
@@ -65,8 +90,8 @@ const mini = (fen: string, pov: 'white' | 'black'): string =>
  */
 const waitingCard = (p: Puzzle): string => `
   <li class="deck-card">
-    ${mini(p.fen, p.pov)}
-    <div class="deck-card-text"><strong>${side(p.pov)} to play.</strong></div>
+    ${mini(p)}
+    <div class="deck-card-text">${waitingText(p)}</div>
     <button class="quiet" data-serve="${escape(p.id)}">Solve this</button>
   </li>`;
 
@@ -99,7 +124,7 @@ function solvedCard(r: ReviewRow): string {
   const played = new Date(r.game?.createdAt ?? 0).toLocaleDateString();
   return `
     <li class="deck-card">
-      ${mini(p.fen, p.pov)}
+      ${mini(p)}
       <div class="deck-card-text">
         <strong>${escape(p.played.san)}</strong> was played, move ${moveNumber(p.ply)} —
         ${escape(`${showEval(p.prevEval)} → ${showEval(p.eval)}`)}${
@@ -167,9 +192,10 @@ export function deckPanel(
       }</span></h3>
     ${
       summary.count
-        ? `<p class="hint">The position and nothing else — no game, no opponent, no date, no
-             evaluation, exactly as one arrives when it is dealt. They are shuffled so that two
-             from one game never come up together; "Solve this" jumps the queue.</p>
+        ? `<p class="hint">Exactly what you get when one is dealt: the position, the squares
+             the opponent's move came from, and the red arrow on the move that lost it. No game,
+             no opponent, no date, no evaluation. They are shuffled so that two from one game
+             never come up together; "Solve this" jumps the queue.</p>
            <ul class="deck-grid">${pageOf(waiting, pages.waiting).map(waitingCard).join('')}</ul>
            ${pager('waiting', waiting.length, pages.waiting)}`
         : `<p class="hint">Nothing is waiting — the engine is either still working or has run

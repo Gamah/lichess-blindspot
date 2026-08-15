@@ -63,9 +63,10 @@ than underfunded. Settings has a "thinking time per position" dial anyway, if
 you want to spend more or, on a phone, less.
 
 **The deck can be looked through.** The *Deck* button opens every position you
-have, over the board rather than under it. Positions still waiting are bare
-boards — the position and the side to play, nothing else, exactly as one arrives
-when it is dealt — and "Solve this" jumps the queue. Solved ones come with
+have, over the board rather than under it. Positions still waiting look
+exactly as they do when they are dealt — the position, the squares the
+opponent's move came from, and the red arrow on the move that lost it, with
+nothing about the game behind them — and "Solve this" jumps the queue. Solved ones come with
 everything: the move you played, what it cost, how the solve went, a link into
 the game, and a button that puts the position back on the board as a replay,
 which changes nothing that was recorded.
