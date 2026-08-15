@@ -47,13 +47,20 @@ and the move the game played in red.
 **What that ranking is worth.** It is a search of a couple of seconds per
 position, run on your device before the position is shown, and stored so the
 same move gets the same verdict every time it comes round. It is not a deep
-analysis. Measured against a twelve-second reference search, it names the same
-best move essentially always, agrees on the same top *two* about 70–90% of the
-time, and reproduces the exact order of all five rarely. Spending longer barely
-helps — the tail of that list is genuinely uncertain, not underfunded. So Hard
-will occasionally refuse a move a stronger engine would rank second. Settings
-has a "thinking time per position" dial if you want to spend more or, on a
-phone, less.
+analysis. Measured against a twelve-second reference search, over thirty
+positions from thirty real games: it names the same best move 93% of the time,
+its top five always contained the longer search's second choice, and it
+reproduces the exact order of all five about a third of the time. Its *top two*
+missed that second choice about a quarter to a third of the time.
+
+So the two strict settings are not one claim at two strengths. **Medium** asks
+for something the search is fairly sure of. **Hard** asks for more certainty
+than a search this long can give, on purpose — it will sometimes refuse a move
+a stronger engine ranks second, and that is the setting working as intended
+rather than a bug. Spending longer does not fix it: eight times the time
+measured no better, because the tail of that list is genuinely uncertain rather
+than underfunded. Settings has a "thinking time per position" dial anyway, if
+you want to spend more or, on a phone, less.
 
 **This uses your processor, and it is meant to.** Blindspot is a chess engine
 running in a tab: every position is searched before you see it, so a long

@@ -597,12 +597,14 @@ export class App {
           engine's top 5 from that position, <strong>Hard</strong> inside its top 2. The engine's
           own move and a move that mates are accepted whatever you pick.</p>
         <p class="warn">Those rankings are worked out in this browser before a position is ever
-          put in front of you, and to a fixed depth rather than for a fixed time — so the answer
-          does not depend on what you are using, only how long it takes to get there. It settles
-          the best move or two and not much more: a deeper search, or lichess' own analysis, will
-          sometimes put a different move third. Hard is strict about something the engine is sure
-          of; Medium's top 5 is wide enough that the disagreement rarely reaches its edge. Neither
-          is a verdict on your move from on high.</p>
+          put in front of you, and each one gets a couple of seconds — so a faster machine
+          searches further in the same time, and the list is a seconds-long opinion rather than a
+          settled fact. Measured against a twelve-second search over thirty positions from real
+          games: the best move agreed 93% of the time and the top 5 always contained the longer
+          search's second choice, but the <em>top 2</em> missed it about a quarter to a third of
+          the time. So Medium's top 5 is something the engine is fairly sure of, and Hard is
+          deliberately asking for more certainty than the search really has. Neither is a verdict
+          on your move from on high.</p>
         <p><strong>Whichever you pick, every position already stored has to be ranked first.</strong>
           That includes the games lichess analysed for you — its export gives one best move per
           position and no way to ask for four more. It is one search per position you would be
@@ -1025,11 +1027,14 @@ const DIFFICULTY_HINT = `What counts as finding it. <strong>Easy</strong> accept
   engine actually plays and a move that mates always count, whatever the setting.
   <br>
   Every position is ranked before it is shown to you, so this takes effect immediately and the
-  same move always gets the same answer. That ranking searches to a fixed depth — the same result
-  on any device, just slower on a modest one — but it is not exhaustive: past the first move or
-  two the order is genuinely uncertain, and a longer search, or lichess' own analysis, will
-  sometimes disagree about what the third-best move is. Hard is the honest setting for that
-  reason; Medium's top 5 is wide enough that the wobble rarely reaches it.`;
+  same move always gets the same answer every time that position comes round. That ranking is a
+  search of a couple of seconds, not an exhaustive one, and it is not equally sure of every part
+  of its list. Measured against a twelve-second search over thirty positions from real games: the
+  best move matched 93% of the time and the top 5 always contained the longer search's second
+  choice — but the <strong>top 2</strong> missed it about a quarter to a third of the time. So
+  Medium asks for something the engine is fairly confident about, and Hard asks for more
+  certainty than a search this long can give. Spending longer does not fix it: eight times the
+  time measured no better.`;
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(ms % 1000 ? 1 : 0)} seconds`;
 

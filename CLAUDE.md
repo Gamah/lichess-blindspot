@@ -347,6 +347,42 @@ threads, against a 12-second reference:
 | depth 18 | 100% | 70% | 94% | 30% | 11.9 s |
 | depth 20 | 100% | 70% | 94% | 20% | 25.9 s |
 
+**Re-measured 2026-08-15 over a corpus**, which is what that table needed and
+did not have: 30 candidate positions, one from each of 30 different games out
+of a 240-game PGN dump of one ~1100 player's history, movetime budgets only,
+same 12-second reference. The last two columns are the ones this run was for —
+how often the *reference's second move* falls outside the budget's top 2 (what
+Hard would refuse) and outside its top 5 (what Medium would refuse):
+
+| budget | best move | same top 2 | top-5 overlap | identical order | Hard refuses ref#2 | Medium refuses ref#2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 500 ms | 93% | 73% | 93% | 30% | 27% | 0% |
+| 1000 ms | 93% | 67% | 95% | 30% | 30% | 0% |
+| 2000 ms | 93% | 77% | 96% | 27% | 23% | 0% |
+| 4000 ms | 87% | 63% | 95% | 33% | 37% | 0% |
+
+Three things it settles:
+
+- **The one-game table was right about the shape.** Flat. Eight times the
+  search time makes every column no better, and the best move is already at
+  93% in half a second. The 4000 ms row being the *worst* on three columns is
+  the size of the noise, and is the honest answer to "would a bigger number
+  help": no, and you cannot tell it from a smaller one.
+- **Hard's boundary disagrees with a long search about a quarter to a third of
+  the time**, and no budget available to a browser fixes that. It is a property
+  of MultiPV rank 2 in ordinary positions, not of `RANK_MOVETIME`. That
+  number belongs in the copy, and now is.
+- **Medium's does not disagree at all** — 0 of 30 at every budget. The
+  reference's second move was always somewhere in the stored top 5. So the two
+  settings are not the same claim at different strengths: Medium's top 5 is
+  something the search is sure of, and Hard's top 2 is not.
+
+Also worth knowing: `0 skipped`. The run reconstructs lila's "the engine
+disagreed with the move played" test against the reference, since PGN carries
+no `variation` — and it never fired. A swing over 0.1 in winning chances and
+the engine's own first choice being the move played did not co-occur once in
+30. The two tests are close to redundant on a real history at this strength.
+
 Small sample, so read the shape and not the digits. Two things decided the
 design:
 
@@ -366,11 +402,13 @@ device-dependence is accepted and written down here rather than paid for.
 (Note the confound before re-deriving this: the reference is itself a movetime
 search, which flatters movetime budgets. It does not flatter them by 14×.)
 
-The consequence for Hard is real and worth stating: its top-2 boundary
-disagrees with a longer search perhaps a tenth to a third of the time, so it
-will sometimes refuse a move a stronger engine ranks second. That is why the
-copy in Settings, on the notice, and under the board says this is a
-seconds-long search and not an exhaustive one — keep it honest.
+The consequence for Hard is real, measured, and worth stating: its top-2
+boundary refuses a move the 12-second reference ranks second **roughly a
+quarter to a third of the time**, at every budget. Medium's top 5 refused one
+0 times in 30. That asymmetry is the honest description of the two settings and
+the copy in Settings and on the notice says it in those words — keep it that
+way, and do not let the copy claim a fixed *depth*: the limit is time, which is
+device-dependent, and that is written down a few paragraphs up.
 
 ## The settings, and what each one is allowed to touch
 
