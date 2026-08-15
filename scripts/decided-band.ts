@@ -26,13 +26,14 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findCandidates, type Candidate } from '../src/analysis/candidates.ts';
+import { findCandidates, type AnalysisEntry, type Candidate } from '../src/analysis/candidates.ts';
 import { povChances, povDiff, type Color, type EvalScore } from '../src/analysis/winningChances.ts';
 import { replay } from '../src/deck/positions.ts';
 import { RANK_LINES, RANK_MOVETIME } from '../src/engine/analyse.ts';
 import { UciSession } from '../src/engine/protocol.ts';
 import { IMPROVE_DIFF } from '../src/solve/retro.ts';
-import type { ExportedGame } from '../src/lichess/export.ts';
+import { povOf, type ExportedGame } from '../src/lichess/export.ts';
+import { parsePgn } from './pgn.ts';
 
 const UA = { 'User-Agent': 'blindspot-band (github.com/Gamah/lichess-blindspot)' };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,23 +134,75 @@ interface Row {
 
 const scoreOf = (l: { score: EvalScore }): EvalScore => l.score;
 
+/**
+ * `findCandidates` with the "the engine disagreed" test removed, for a corpus
+ * that came in as PGN and so has evals but no `variation`. Everything else is
+ * the same test on the same numbers.
+ *
+ * The dropped test is not dropped for free — it is **reconstructed downstream**
+ * from the wide search this script already runs, by throwing away any position
+ * whose top line is the move that was played. That is the same question lila
+ * asks (`hasCompChild`), asked of our engine at 1.5s rather than of lichess'
+ * at its own depth, so the two disagree at the edges. Without it the corpus
+ * would be biased towards exactly what is being measured: a forced losing
+ * sequence swings past the threshold while the engine agrees with every move
+ * of it, and those are all "already decided" by construction.
+ */
+function relaxedCandidates(
+  moves: string[],
+  analysis: readonly AnalysisEntry[],
+  pov: Color,
+): Candidate[] {
+  const out: Candidate[] = [];
+  const score = (a: AnalysisEntry | undefined): EvalScore | undefined =>
+    !a ? undefined : a.mate !== undefined ? { mate: a.mate } : a.eval !== undefined ? { cp: a.eval } : undefined;
+  for (let i = 1; i < moves.length; i++) {
+    if ((i % 2 === 0 ? 'white' : 'black') !== pov) continue;
+    const prev = score(analysis[i - 1]);
+    const curr = score(analysis[i]);
+    if (!prev || !curr) continue;
+    const swing = Math.abs(povDiff('white', prev, curr)) > 0.1;
+    const lostMate = prev.mate !== undefined && curr.mate === undefined && Math.abs(prev.mate) <= 3;
+    if (!swing && !lostMate) continue;
+    out.push({ index: i, played: moves[i]!, best: '', variation: [], prevEval: prev, eval: curr });
+  }
+  return out;
+}
+
 await mkdir(CACHE, { recursive: true });
 const args = process.argv.slice(2);
 const count = args.length === 1 && /^\d+$/.test(args[0]!) ? Number(args[0]) : 0;
-const ids = count || !args.length ? await sampleIds(count || 12) : args;
-console.log(`corpus: ${ids.length} games (cache ${CACHE})`);
+
+// A PGN dump plus the name of its player: one person's real history, which is
+// the corpus this question actually wants — the puzzle-sourced games are all
+// strong players and have no lost middlegames in them at all.
+const dump = args.find(a => a.endsWith('.pgn') || a.endsWith('.ndjson'));
+const username = dump ? args[args.indexOf(dump) + 1] : undefined;
+let corpus: ExportedGame[];
+if (dump) {
+  if (!username) throw new Error('a PGN dump needs the username to take the point of view of');
+  corpus = parsePgn(await readFile(dump, 'utf8'));
+} else {
+  const ids = count || !args.length ? await sampleIds(count || 12) : args;
+  corpus = [];
+  for (const id of ids) {
+    try {
+      corpus.push(await cached(id));
+    } catch (e) {
+      console.warn('skip', id, String(e));
+    }
+  }
+}
+console.log(
+  `corpus: ${corpus.length} games${dump ? ` from ${dump}, as ${username}` : ` (cache ${CACHE})`}`,
+);
 
 const session = await bootEngine();
 const rows: Row[] = [];
+let agreed = 0;
 
-for (const id of ids) {
-  let game: ExportedGame;
-  try {
-    game = await cached(id);
-  } catch (e) {
-    console.warn('skip', id, String(e));
-    continue;
-  }
+for (const game of corpus) {
+  const id = game.id;
   if (!analysed(game)) {
     console.warn('skip', id, 'no analysis');
     continue;
@@ -165,11 +218,16 @@ for (const id of ids) {
     console.warn('skip', id, 'unreplayable', String(e));
     continue;
   }
-  for (const pov of ['white', 'black'] as const) {
-    const candidates: Candidate[] = findCandidates(moves, game.analysis ?? [], {
-      pov,
-      ...(fromPly !== undefined ? { fromPly } : {}),
-    });
+  // One person's dump is scanned from their side only; a corpus of strangers'
+  // games is scanned from both, since neither player is the one solving.
+  const sides = dump ? ([povOf(game, username!)].filter(Boolean) as Color[]) : (['white', 'black'] as Color[]);
+  for (const pov of sides) {
+    const candidates: Candidate[] = dump
+      ? relaxedCandidates(moves, game.analysis ?? [], pov)
+      : findCandidates(moves, game.analysis ?? [], {
+          pov,
+          ...(fromPly !== undefined ? { fromPly } : {}),
+        });
     for (const c of candidates) {
       const fen = steps[c.index]?.fen;
       if (!fen) continue;
@@ -178,6 +236,13 @@ for (const id of ids) {
       // measurable at all: the top five always beat a blunder — that is the
       // design, and it is why they cannot answer this question.
       const all = await session.analyseLines({ fen, movetime: WIDE_MOVETIME, multiPv: WIDE_LINES });
+      // The reconstructed `variation.length > 0`: the engine's own first choice
+      // being the move played is lila's "no comp child", and such a position is
+      // not a candidate however far the eval moved.
+      if (all[0]?.pv[0] === steps[c.index]?.uci) {
+        agreed++;
+        continue;
+      }
       const lines = all.slice(0, RANK_LINES);
       const accepted = (l: { score: EvalScore }) => povDiff(pov, scoreOf(l), c.eval) > IMPROVE_DIFF;
       // Exactly `altVerdicts`: the eval test alone, against the move played.
@@ -200,7 +265,11 @@ for (const id of ids) {
     }
   }
 }
-console.log(`\n\n${rows.length} candidates measured\n`);
+console.log(
+  `\n\n${rows.length} candidates measured` +
+    (agreed ? `, ${agreed} dropped because the engine played the same move` : '') +
+    '\n',
+);
 
 const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)}%` : '—');
 
@@ -242,6 +311,19 @@ for (const floor of [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]) {
       `${kept.length} (${pct(kept.length, rows.length)})`.padStart(17) +
       free(kept).padStart(21) +
       free(dropped).padStart(24),
+  );
+}
+
+// The question a floor exists to answer: are the free wins actually out at the
+// edges? If the worst offenders sit near 0.0 then no floor on `prevEval` can
+// find them and the whole idea is misaimed.
+const worst = [...rows].sort((a, b) => b.freeShare - a.freeShare).slice(0, 15);
+console.log('\nthe 15 freest positions — where a floor would have to reach');
+for (const r of worst) {
+  console.log(
+    `  ${r.game} ${r.pov.padEnd(5)} ply ${String(r.index + 1).padStart(3)} ${r.played.padEnd(6)}` +
+      ` before ${r.before.toFixed(2).padStart(5)} after ${r.after.toFixed(2).padStart(5)}` +
+      ` free ${(100 * r.freeShare).toFixed(0).padStart(3)}% of ${r.legal}`,
   );
 }
 
