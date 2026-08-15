@@ -26,14 +26,14 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findCandidates, type AnalysisEntry, type Candidate } from '../src/analysis/candidates.ts';
+import { findCandidates, type Candidate } from '../src/analysis/candidates.ts';
 import { povChances, povDiff, type Color, type EvalScore } from '../src/analysis/winningChances.ts';
 import { replay } from '../src/deck/positions.ts';
 import { RANK_LINES, RANK_MOVETIME } from '../src/engine/analyse.ts';
 import { UciSession } from '../src/engine/protocol.ts';
 import { IMPROVE_DIFF } from '../src/solve/retro.ts';
 import { povOf, type ExportedGame } from '../src/lichess/export.ts';
-import { parsePgn } from './pgn.ts';
+import { parsePgn, relaxedCandidates } from './pgn.ts';
 
 const UA = { 'User-Agent': 'blindspot-band (github.com/Gamah/lichess-blindspot)' };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,41 +133,6 @@ interface Row {
 }
 
 const scoreOf = (l: { score: EvalScore }): EvalScore => l.score;
-
-/**
- * `findCandidates` with the "the engine disagreed" test removed, for a corpus
- * that came in as PGN and so has evals but no `variation`. Everything else is
- * the same test on the same numbers.
- *
- * The dropped test is not dropped for free — it is **reconstructed downstream**
- * from the wide search this script already runs, by throwing away any position
- * whose top line is the move that was played. That is the same question lila
- * asks (`hasCompChild`), asked of our engine at 1.5s rather than of lichess'
- * at its own depth, so the two disagree at the edges. Without it the corpus
- * would be biased towards exactly what is being measured: a forced losing
- * sequence swings past the threshold while the engine agrees with every move
- * of it, and those are all "already decided" by construction.
- */
-function relaxedCandidates(
-  moves: string[],
-  analysis: readonly AnalysisEntry[],
-  pov: Color,
-): Candidate[] {
-  const out: Candidate[] = [];
-  const score = (a: AnalysisEntry | undefined): EvalScore | undefined =>
-    !a ? undefined : a.mate !== undefined ? { mate: a.mate } : a.eval !== undefined ? { cp: a.eval } : undefined;
-  for (let i = 1; i < moves.length; i++) {
-    if ((i % 2 === 0 ? 'white' : 'black') !== pov) continue;
-    const prev = score(analysis[i - 1]);
-    const curr = score(analysis[i]);
-    if (!prev || !curr) continue;
-    const swing = Math.abs(povDiff('white', prev, curr)) > 0.1;
-    const lostMate = prev.mate !== undefined && curr.mate === undefined && Math.abs(prev.mate) <= 3;
-    if (!swing && !lostMate) continue;
-    out.push({ index: i, played: moves[i]!, best: '', variation: [], prevEval: prev, eval: curr });
-  }
-  return out;
-}
 
 await mkdir(CACHE, { recursive: true });
 const args = process.argv.slice(2);

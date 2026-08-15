@@ -17,7 +17,8 @@
 // negative when Black is mating — the same convention as the JSON `eval`/
 // `mate` fields, so the conversion is only a factor of a hundred.
 
-import type { AnalysisEntry } from '../src/analysis/candidates.ts';
+import type { AnalysisEntry, Candidate } from '../src/analysis/candidates.ts';
+import { povDiff, type Color, type EvalScore } from '../src/analysis/winningChances.ts';
 import type { ExportedGame } from '../src/lichess/export.ts';
 
 const HEADER = /^\[(\w+)\s+"([^"]*)"\]$/;
@@ -91,4 +92,40 @@ export function parsePgn(text: string): ExportedGame[] {
     });
   }
   return games;
+}
+
+/**
+ * `findCandidates` with the "the engine disagreed" test removed, for a corpus
+ * that came in as PGN and so has evals but no `variation`. Everything else is
+ * the same test on the same numbers.
+ *
+ * **The dropped test is not dropped for free.** It has to be reconstructed
+ * downstream, by the caller, from a search of its own: a position whose engine
+ * top line *is* the move that was played is lila's "no comp child" and is not
+ * a candidate however far the eval moved. Without that, a corpus is biased
+ * towards exactly the thing usually being measured — a forced losing sequence
+ * swings past the threshold on every move while the engine agrees with all of
+ * them. Every caller of this does that filter and says at what search depth,
+ * because ours at a second or two and lichess' at its own depth disagree at
+ * the edges.
+ */
+export function relaxedCandidates(
+  moves: string[],
+  analysis: readonly AnalysisEntry[],
+  pov: Color,
+): Candidate[] {
+  const out: Candidate[] = [];
+  const score = (a: AnalysisEntry | undefined): EvalScore | undefined =>
+    !a ? undefined : a.mate !== undefined ? { mate: a.mate } : a.eval !== undefined ? { cp: a.eval } : undefined;
+  for (let i = 1; i < moves.length; i++) {
+    if ((i % 2 === 0 ? 'white' : 'black') !== pov) continue;
+    const prev = score(analysis[i - 1]);
+    const curr = score(analysis[i]);
+    if (!prev || !curr) continue;
+    const swing = Math.abs(povDiff('white', prev, curr)) > 0.1;
+    const lostMate = prev.mate !== undefined && curr.mate === undefined && Math.abs(prev.mate) <= 3;
+    if (!swing && !lostMate) continue;
+    out.push({ index: i, played: moves[i]!, best: '', variation: [], prevEval: prev, eval: curr });
+  }
+  return out;
 }
