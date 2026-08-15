@@ -546,6 +546,13 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 - **Nothing on the boot path may reject.** `ensureIsolation` cannot throw and
   `main.ts` catches anyway; a page that renders without an engine beats a page
   that renders nothing.
+**Confirmed working in Firefox 2026-08-15** by the person who reported the
+original `SecurityError: The operation is insecure`. All three defects were
+found by reading rather than by reproduction — there is no Firefox on the dev
+host — so the confirmation is the only evidence there is that the reading was
+right. It covers ordinary Firefox; the blocked-cookies and private-window cases
+behind the original report were never reproduced and never will be from here.
+
 - Failing soft is not sufficient on its own: session state that lives only in
   storage stops advancing when writes no-op. The pipeline's paging state
   (`until`, `seen`) is held in memory and written through, or a refill would
@@ -606,6 +613,31 @@ load, and again whenever something that shapes the deck changes. So:
 - The reason this exists: every change to what a puzzle holds used to need a
   migration (`App.withIntro` backfilled the opening animation onto old
   records). Don't reintroduce a stored puzzle to save a derivation.
+
+**Two places in the app are on a hot path, and both are handled by not doing
+the work twice.** Everything else renders or derives once and can be as naive
+as it likes; do not generalise from these two.
+
+- **The loading screen is built once and patched** (`src/ui/loading.ts`). It is
+  driven by the pipeline's progress events, which arrive once per swept
+  position — several a second for as long as the analysis runs — and it used to
+  answer each one by rewriting the root's `innerHTML`: re-parsing a dozen
+  elements and two hundred words of prose to move a bar a pixel. `LoadingScreen`
+  owns its DOM, compares each field against what is in it, and `App` only
+  assembles values. `attached()` is how it survives another screen taking the
+  root without every other `render*` having to know about it.
+- **`buildDeck` re-derives only the games that moved.** It runs on every load
+  and on every Settings click that shapes the deck, and derivation is a full
+  chessops replay: `parseSan` is a move generator and `makeFen` runs twice a
+  ply, measured at ~18 µs/ply, so ~450 ms for 200 analysed games of 120 plies on
+  the dev host and several times that on a phone — with no spinner behind the
+  click. `derivedKey` (`src/deck/derive.ts`) stamps everything
+  `puzzlesFromGame` reads: the per-ply score, whether the engine disagreed, the
+  ranking and its `altsMs`, plus `maxPerGame`. It has to be a stamp rather than
+  object identity, because every rebuild reads fresh objects out of IndexedDB.
+  The cache is per profile — two profiles can hold the same game from opposite
+  sides — and is rebuilt from the games still present each time, so purging
+  prunes it for free.
 
 **`purgeIfTight` is gone and nothing replaced it.** It shed the oldest game
 payloads over 80% of quota, which was safe when a payload was a download away

@@ -109,6 +109,42 @@ export function puzzlesFromGame(
 }
 
 /**
+ * A stamp of everything `puzzlesFromGame` would read off this game, cheap
+ * enough to compute on every deck build.
+ *
+ * The deck is rebuilt from storage on every load and on every Settings click
+ * that shapes it, and the rebuild is not free: `prepareGame` replays the whole
+ * game through chessops, where `parseSan` is a full move generator and
+ * `makeFen` runs twice a ply — measured at ~18 µs a ply, so ~450 ms for 200
+ * analysed games of 120 plies on a dev machine and several times that on a
+ * phone, blocking the thread with no spinner behind it. Almost all of that work
+ * is repeated: nothing about a stored game changes between two rebuilds unless
+ * the engine has been at it.
+ *
+ * So the caller keeps the derived puzzles and re-derives only when this stamp
+ * moves. It has to be a stamp rather than object identity, because every
+ * rebuild reads fresh objects out of IndexedDB. What it covers is what the
+ * finder and the build actually consume — the score, whether the engine
+ * disagreed with the move, the ranking and how long the ranking got — plus the
+ * cap, which is retroactive. Everything else about a game (its moves, its
+ * variant, its division) is fixed from the moment it was fetched, and the id
+ * covers those.
+ */
+export function derivedKey(game: ExportedGame, opts: DeriveOptions = {}): string {
+  const analysis = game.analysis;
+  const head = `${game.id}|${opts.maxPerGame ?? 0}`;
+  if (!analysis?.length) return `${head}|none`;
+  const parts = [head, String(analysis.length)];
+  for (const entry of analysis)
+    parts.push(
+      `${entry.eval ?? ''},${entry.mate ?? ''},${entry.variation ? 1 : 0},${
+        entry.alts?.length ?? 0
+      },${entry.altsMs ?? 0}`,
+    );
+  return parts.join('|');
+}
+
+/**
  * The positions in this game that would be puzzles if they had been ranked.
  * Empty for a game that is fully ranked, which is the common case and is why
  * the backlog pass can walk the whole store cheaply.

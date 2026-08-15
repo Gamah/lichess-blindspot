@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { puzzlesFromGame, unrankedPlies } from '../src/deck/derive.ts';
+import { derivedKey, puzzlesFromGame, unrankedPlies } from '../src/deck/derive.ts';
+import type { AnalysisEntry } from '../src/analysis/candidates.ts';
 import type { ExportedGame } from '../src/lichess/export.ts';
 
 // A puzzle is a view over a stored game, so these are the tests that used to be
@@ -136,4 +137,34 @@ test('a quicker ranking still shows its puzzle, and still asks to be redone', ()
   // And left alone when the setting asks for no more than it already had.
   assert.deepEqual(unrankedPlies(g, 'someone', { minMs: 1000 }), []);
   assert.deepEqual(unrankedPlies(g, 'someone', { minMs: 500 }), [], 'never redone downwards');
+});
+
+// The deck is rebuilt from storage on every load and on every Settings click
+// that shapes it, and re-deriving a game is a full chessops replay — measured
+// at ~450 ms for 200 analysed games. `derivedKey` is what lets the caller skip
+// the ones nothing has touched, so it has to move when, and only when, the
+// derivation would.
+test('the derivation stamp moves exactly when the derivation would', () => {
+  const base = game();
+  const key = (g: ExportedGame, maxPerGame = 0) => derivedKey(g, { maxPerGame });
+
+  assert.equal(key(base), key(game()), 'the same stored game, read twice');
+  assert.notEqual(key(base), key(base, 1), 'the cap is retroactive, so it is in the stamp');
+  assert.notEqual(key(base), key(game({ analysis: UNRANKED })), 'a ranking arriving');
+  assert.notEqual(
+    key(base),
+    key(game({ id: 'other' })),
+    'and it is per game, not one stamp for the store',
+  );
+
+  // The ranking search getting longer is a re-rank, not a no-op: "thinking time
+  // per position" re-queues everything done in less.
+  const longer: AnalysisEntry[] = structuredClone(ANALYSIS);
+  longer[4]!.altsMs = 4000;
+  assert.notEqual(key(base), key(game({ analysis: longer })));
+
+  // A game nobody has evaluated derives nothing, and says so cheaply.
+  const bare = game({ analysis: undefined });
+  assert.match(key(bare), /\|none$/);
+  assert.deepEqual(puzzlesFromGame(bare, 'someone'), []);
 });

@@ -14,7 +14,7 @@
 import { Deck } from '../app/deck.ts';
 import { Pipeline, type Progress } from '../app/pipeline.ts';
 import type { Puzzle } from '../deck/build.ts';
-import { puzzlesFromGame } from '../deck/derive.ts';
+import { derivedKey, puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
@@ -40,10 +40,8 @@ import {
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
 import { Board, type PlayedMove } from './board.ts';
+import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
-/** Unlock the board once this many games are through, or this many puzzles exist. */
-const GATE_GAMES = 5;
-const GATE_PUZZLES = 5;
 /** Fetch more when the deck gets this thin. */
 const REFILL_AT = 5;
 /** How long the engine gets to judge a move the player invented. */
@@ -59,7 +57,15 @@ export class App {
   private profile: Profile | undefined;
   private pipeline: Pipeline | undefined;
   private deck = new Deck();
+  /**
+   * Puzzles already derived, per game, with the stamp they were derived from.
+   * Kept because `buildDeck` runs on every load and every Settings click that
+   * shapes the deck, and re-deriving is a full chessops replay per game.
+   */
+  private derived = new Map<string, { key: string; puzzles: Puzzle[] }>();
   private board: Board | undefined;
+  /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
+  private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
   private attempts = 0;
   private enginePromise: Promise<Analyser> | undefined;
@@ -201,61 +207,26 @@ export class App {
   }
 
   /**
-   * The wait before the board opens, which on a first visit or a catch-up is
-   * minutes rather than seconds. Two rules learned by watching it:
+   * The loading screen, mounted once and patched thereafter.
    *
-   * - The bar measures **progress towards being able to start**, not towards
-   *   all the work being done. Those are wildly different when a long history
-   *   is being caught up, and only the first one ends when the board appears.
-   * - It has to move *within* a game, not once per game. The gate is five
-   *   games, so a bar stepping in fifths moved twice and then the board was
-   *   there — which is indistinguishable from a bar that is broken. The
-   *   pipeline already reports a fraction through the game it is on; that is
-   *   what makes it continuous.
+   * This is called on **every** pipeline progress event — several a second for
+   * as long as the analysis runs — so it must not be a render. `LoadingScreen`
+   * owns the DOM and compares each field against what is already in it; the
+   * only thing that happens here is assembling the values.
    */
   private renderLoading(): void {
-    const done = this.progress.gamesDone;
-    const found = this.deck.unsolvedCount();
-    const boot = this.booting;
-    const within = this.progress.current ?? 0;
-    // Either gate can open the board, so the bar tracks whichever is closer.
-    const ready = Math.min(1, Math.max(found / GATE_PUZZLES, (done + within) / GATE_GAMES));
-    // The net download is its own phase and its own bar; the status line above
-    // says which of the two is being shown.
-    const bar = boot?.download ?? ready;
-    const backlog = this.progress.backlog ?? 0;
-    this.root.innerHTML = `
-      <main class="loading">
-        <h1>Blindspot</h1>
-        <p class="status">${escape(
-          boot?.message ?? (backlog ? 'Working out the best moves' : 'Analysing your games'),
-        )}</p>
-        ${this.notice ? `<p class="warn">${escape(this.notice)}</p>` : ''}
-        ${engineNag(this.isolation, this.engineFailed)}
-        ${batteryWarning()}
-        <div class="bar"><div class="fill" style="width:${Math.round(bar * 100)}%"></div></div>
-        <p class="detail">${
-          boot?.download !== undefined
-            ? `Neural net, ${Math.round(boot.download * 100)}% — about 15 MB, once, then never again`
-            : `${done} game${done === 1 ? '' : 's'} done · ${found} position${
-                found === 1 ? '' : 's'
-              } ready · the board opens at ${GATE_PUZZLES}`
-        }</p>
-        <p class="hint">${
-          backlog
-            ? `Every position is searched before you are shown it, so that finding the move means
-               the same thing each time you meet it. ${backlog} stored game${
-                 backlog === 1 ? '' : 's'
-               } still to go — nothing is being downloaded again, this is the processor doing the
-               work, and it is one-time per game. The board opens as soon as there is enough to
-               solve and the rest carries on behind it.`
-            : `Games lichess has already analysed skip the slow half. Every position is then
-               searched here to work out the engine's best few moves in it, which is the slow,
-               warm, deliberate part — and is what lets a position be judged the same way every
-               time it comes round.`
-        }</p>
-      </main>
-      ${footer()}`;
+    // Another screen may have taken the root since this was last shown.
+    if (!this.loading?.attached()) this.loading = new LoadingScreen(this.root);
+    this.loading.update({
+      boot: this.booting,
+      gamesDone: this.progress.gamesDone,
+      found: this.deck.unsolvedCount(),
+      within: this.progress.current ?? 0,
+      backlog: this.progress.backlog ?? 0,
+      notice: this.notice,
+      nag: engineNag(this.isolation, this.engineFailed),
+      battery: batteryWarning(),
+    });
   }
 
   private renderSolving(): void {
@@ -299,6 +270,9 @@ export class App {
     this.pipeline = undefined;
     this.profile = undefined;
     this.deck = new Deck();
+    // Keyed by game id, and two profiles can hold the same game from opposite
+    // sides — so it belongs to the profile, not to the app.
+    this.derived = new Map();
     this.solve = undefined;
     this.board = undefined;
     this.progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
@@ -687,9 +661,25 @@ export class App {
     const deck = new Deck();
     deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
     const maxPerGame = settings().maxPerGame;
+    // Re-derived only where something moved. See `derivedKey`: the replay this
+    // skips is ~18 µs a ply, which on a long analysed history is most of a
+    // second of blocked thread behind a Settings click. The new map is built
+    // from the games that are still here, so purging prunes it for free.
+    const fresh = new Map<string, { key: string; puzzles: Puzzle[] }>();
+    const derived = games.flatMap(game => {
+      const key = derivedKey(game, { maxPerGame });
+      const hit = this.derived.get(game.id);
+      const entry =
+        hit?.key === key
+          ? hit
+          : { key, puzzles: puzzlesFromGame(game, profile.username, { maxPerGame }) };
+      fresh.set(game.id, entry);
+      return entry.puzzles;
+    });
+    this.derived = fresh;
     // One add, not one per game: `add` reshuffles what is left each time, and
     // the shuffle is what keeps two positions from one game apart.
-    deck.add(games.flatMap(game => puzzlesFromGame(game, profile.username, { maxPerGame })));
+    deck.add(derived);
     // Whatever is on the board is still on the board. Without this the new deck
     // holds the served position in `pending` with nothing marking it served, so
     // Next could deal the position already in front of them and Skip has to be
@@ -1213,9 +1203,3 @@ function engineNag(report: IsolationReport, failure?: string): string {
     <span class="dim">${escape(facts.join(' · '))}</span></p>`;
 }
 
-function footer(): string {
-  return `<footer>
-    <a href="https://github.com/Gamah/lichess-blindspot">Source</a> · AGPL-3.0-or-later ·
-    positions from <a href="https://lichess.org">lichess.org</a>
-  </footer>`;
-}
