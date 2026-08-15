@@ -39,6 +39,7 @@ import {
   settings,
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
+import { aboutPanel, fineprint, pitch, steps } from './about.ts';
 import { Board, type PlayedMove } from './board.ts';
 import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
@@ -64,6 +65,8 @@ export class App {
    */
   private derived = new Map<string, { key: string; puzzles: Puzzle[] }>();
   private board: Board | undefined;
+  /** Which of the two things the one panel is currently showing, if it is open. */
+  private panel: 'settings' | 'about' | undefined;
   /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
   private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
@@ -114,12 +117,7 @@ export class App {
         <h1>Blindspot</h1>
         <p class="tagline">Your own blunders, with the game taken off them.</p>
 
-        <p>Lichess' <em>Learn from your mistakes</em> walks you through one game's mistakes in
-          order, with the game around them — it reads as review, and you already know something
-          went wrong. Blindspot takes the same positions, strips them, and shuffles them across
-          your recent games. No opponent, no date, no move number, no eval bar. Just a position,
-          from your side of the board, one red arrow showing the move that lost it, and no clue
-          whether the answer is a combination or a quiet pawn move.</p>
+        ${pitch()}
 
         <form class="start">
           <input name="username" list="recent" placeholder="lichess username" autocomplete="off"
@@ -134,43 +132,8 @@ export class App {
         ${engineNag(this.isolation, this.engineFailed)}
         ${batteryWarning()}
 
-        <ol class="steps">
-          <li>
-            <h2>Your games, from lichess</h2>
-            <p>Straight from the public API — no account, no token, nothing to authorise. Twenty
-              at a time, and when you work through those it reaches further back into your
-              history, for as long as you have games.</p>
-          </li>
-          <li>
-            <h2>Analysed here, in this tab</h2>
-            <p>Stockfish runs in this page — the first visit downloads about 15 MB of neural
-              net, once. Games lichess has already analysed bring their evaluations with them and
-              skip the slow half, but every position you are shown is still searched here first,
-              to work out the five best moves in it. That is what the fan on your processor is
-              for, and it is meant to be doing that.</p>
-          </li>
-          <li>
-            <h2>The moments it fell apart</h2>
-            <p>Every move where your position dropped sharply becomes a puzzle, using the same
-              rule lichess itself uses. The opening is left out of it rather than held against
-              you.</p>
-          </li>
-          <li>
-            <h2>Judged on merit, not on one answer</h2>
-            <p>A move is right if it doesn't throw away winning chances — not if it matches one
-              blessed solution. Quiet positional saves count. The move you actually played never
-              does. Difficulty can narrow that to the engine's top five or top two, and once a
-              position is solved its whole ranking goes on the board as numbered arrows. What
-              those are worth is written up in the <a
-              href="https://github.com/Gamah/lichess-blindspot#difficulty-and-the-arrows"
-              target="_blank" rel="noopener">readme</a>.</p>
-          </li>
-        </ol>
-
-        <p class="fineprint"><strong>There is no server.</strong> This page is static, your games
-          are fetched straight from lichess, the engine runs in this tab, and the puzzles and your
-          solving history are kept in this browser and sent nowhere. Clear the site data and it is
-          all gone. The source is linked below, as the licence requires.</p>
+        ${steps()}
+        ${fineprint()}
       </main>
       ${footer()}`;
     const form = this.root.querySelector('form.start') as HTMLFormElement;
@@ -234,6 +197,7 @@ export class App {
       <header class="topbar">
         <span class="who">${escape(this.profile?.username ?? '')}</span>
         <span class="spacer"></span>
+        <button id="about" class="quiet">About</button>
         <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
       </header>
@@ -254,13 +218,49 @@ export class App {
       </main>
       <div class="panel" id="panel" hidden></div>
       ${footer()}`;
+    this.panel = undefined;
     this.paintStorageNote();
     this.board = new Board(this.root.querySelector('#board') as HTMLElement, m => void this.onMove(m));
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
-    (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.toggleSettings();
+    (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.togglePanel('settings');
+    (this.root.querySelector('#about') as HTMLButtonElement).onclick = () => void this.togglePanel('about');
+  }
+
+  /**
+   * The one panel, in one of two modes.
+   *
+   * About is here because there is otherwise **no way back to the explanation**
+   * once a username has been typed: the landing page is reachable only through
+   * Switch player, which throws the session away to get there, and someone who
+   * arrives with a name already remembered never sees it at all. Its copy is
+   * shared with the landing page rather than written twice — see `about.ts`.
+   */
+  private async togglePanel(kind: 'settings' | 'about'): Promise<void> {
+    const panel = this.root.querySelector('#panel') as HTMLElement | null;
+    if (!panel || !this.profile) return;
+    // The button that opened it also closes it; the other button switches.
+    if (!panel.hidden && this.panel === kind) {
+      panel.hidden = true;
+      this.panel = undefined;
+      return;
+    }
+    this.panel = kind;
+    panel.hidden = false;
+    // Prose wants a narrower measure than a settings grid does.
+    panel.className = kind === 'about' ? 'panel about' : 'panel';
+    if (kind === 'about') {
+      panel.innerHTML = aboutPanel(batteryWarning());
+      (panel.querySelector('#close') as HTMLButtonElement).onclick = () => {
+        panel.hidden = true;
+        this.panel = undefined;
+      };
+      panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
+    await this.renderSettings(panel);
   }
 
   /** Back to the landing screen, with the background work stopped. */
@@ -270,6 +270,7 @@ export class App {
     this.pipeline = undefined;
     this.profile = undefined;
     this.deck = new Deck();
+    this.panel = undefined;
     // Keyed by game id, and two profiles can hold the same game from opposite
     // sides — so it belongs to the profile, not to the app.
     this.derived = new Map();
@@ -281,13 +282,8 @@ export class App {
     this.renderLanding(previous);
   }
 
-  private async toggleSettings(): Promise<void> {
-    const panel = this.root.querySelector('#panel') as HTMLElement | null;
-    if (!panel || !this.profile) return;
-    if (!panel.hidden) {
-      panel.hidden = true;
-      return;
-    }
+  private async renderSettings(panel: HTMLElement): Promise<void> {
+    if (!this.profile) return;
     const estimate = await storageEstimate();
     const solved = this.deck.solvedCount();
     const chosen = settings().maxPerGame;
@@ -300,7 +296,6 @@ export class App {
       )
       .join('');
 
-    panel.hidden = false;
     panel.innerHTML = `
       <div class="panel-head">
         <h2>Settings</h2>
@@ -390,7 +385,10 @@ export class App {
       const el = panel.querySelector('#panel-status');
       if (el) el.textContent = text;
     };
-    (panel.querySelector('#close') as HTMLButtonElement).onclick = () => (panel.hidden = true);
+    (panel.querySelector('#close') as HTMLButtonElement).onclick = () => {
+      panel.hidden = true;
+      this.panel = undefined;
+    };
     (panel.querySelector('#difficulty') as HTMLSelectElement).onchange = e => {
       const value = (e.target as HTMLSelectElement).value as Difficulty;
       saveSettings({ difficulty: value });

@@ -557,6 +557,22 @@ chessground's `drawClear`, which empties `drawable.shapes` but leaves
 someone touches the board to look at it. That was a real bug, found by
 touching the board.
 
+**The explanation is reachable after the front door, and there is one copy of
+it.** Once a username is typed there is no way back to the landing page except
+Switch player, which throws the session away to get there — and someone who
+arrives with a name already remembered never sees it at all. So the topbar has
+an **About** button, and `src/ui/about.ts` holds `pitch`/`steps`/`fineprint`,
+which the landing page and the About panel both assemble. Two copies of an
+explanation drift, and the one behind a button is the one nobody would notice
+going stale.
+
+About carries two things the landing page cannot, because they are only met
+*after* solving starts: what the numbered arrows mean, and why the machine is
+working. `#panel` is one element in two modes (`App.panel` says which), so
+opening one closes the other; `panel.about` is the class that gives prose a
+measure. Nothing in `about.ts` interpolates anything a person typed, and so
+nothing in it escapes anything — keep it that way.
+
 **How an existing user is told a setting exists.** The same shape as the schema
 reset, and the only other thing in the app that gates the front door:
 `Settings.difficulty` is **absent** until chosen, and `App.begin` asks

@@ -496,3 +496,18 @@ button.danger:hover {
   background-position: center;
   pointer-events: none;
 }
+
+/* The About panel is prose, not a grid of controls, so it gets a measure. */
+.panel.about p,
+.panel.about li p {
+  max-width: 42rem;
+}
+
+.panel.about h2 {
+  font-size: 1.1rem;
+  margin: 1.5rem 0 0.4rem;
+}
+
+.panel.about .steps h2 {
+  margin: 0 0 0.35rem;
+}
