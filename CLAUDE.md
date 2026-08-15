@@ -564,6 +564,29 @@ insecure` when a storage API is **touched** — reading, not just writing. So:
 - Call `navigator.storage.persist()` once, or the browser LRU-evicts solve
   history under disk pressure.
 
+**`meta.fetched` means "looked at, found nothing" — and only the engine may
+say so.** A game is written to the store the moment it is fetched and analysed
+afterwards, so a session whose engine never started used to stamp every game it
+touched and walk backwards through the whole history doing it; seen for real on
+a phone, seventy games, and the deck never filled again even once there was an
+engine. So `Pipeline.analyser()` collapses every reason the engine did not
+start into one `NoEngine`, and `drain` on that error stamps nothing, empties the
+queue, and sets `engineDown` — which blocks fetching for the rest of the
+session, since more payloads nothing can read is not progress. `status()`
+reports `noEngine` ahead of everything else so the exhausted screen does not
+claim to be fetching.
+
+The repair pass is `Pipeline.sweepBacklog`, and **its work list is derived from
+the store, not from a list in `meta`**: a stored game with no analysis that
+`prepareGame` accepts is exactly a game that owes the engine a pass. That needs
+no new `meta` field and so no schema bump, and — the reason to prefer it — it
+heals stores that the broken version *already* stamped, which a list written
+from here on could not. `prepareGame` is what keeps a genuinely unplayable game
+(wrong variant, four plies, a move list chessops rejects) from being re-queued
+every session; it is pure and cheap, so paying it per session is nothing.
+`markDone` moves an id between `analysed` and `fetched` rather than adding to
+both, because a repaired game is usually already in the wrong one.
+
 **Puzzles are not stored.** They are a view over a stored game, rebuilt by
 `puzzlesFromGame` (`src/deck/derive.ts`) every time the deck is built — on
 load, and again whenever something that shapes the deck changes. So:

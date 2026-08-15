@@ -44,6 +44,22 @@ const fakeStore = (): Store & { stored: ExportedGame[] } => {
 
 const noEngine = (): Promise<Analyser> => Promise.reject(new Error('no engine in tests'));
 
+/**
+ * An engine that scores every position the same, so a game analyses cleanly and
+ * yields no candidates.
+ *
+ * The governor tests are about how often lichess is asked, and they used
+ * `noEngine` because the engine was beside the point. It is not beside the
+ * point any more: a game left unanalysed is a backlog, and a backlog stops the
+ * pipeline paging further back — which is the whole of the fix for a session
+ * that ran without an engine. So "the engine is fine and finds nothing" is now
+ * what neutral looks like.
+ */
+const flatEngine = (): Promise<Analyser> =>
+  Promise.resolve({
+    analyse: (): Promise<EngineLine> => Promise.resolve({ depth: 12, score: { cp: 20 }, pv: ['e2e4'] }),
+  });
+
 const events = () => {
   const errors: Error[] = [];
   const retries: number[] = [];
@@ -93,7 +109,7 @@ test('a burst of run() calls is one export, not a burst of exports', async () =>
   const now = { at: 1_000_000 };
   try {
     const { handlers } = events();
-    const pipeline = new Pipeline(fakeStore(), noEngine, handlers, () => now.at);
+    const pipeline = new Pipeline(fakeStore(), flatEngine, handlers, () => now.at);
     // The deck asks after every solve; the end-of-deck screen asks on every click.
     await Promise.all([pipeline.run(), pipeline.run(), pipeline.run()]);
     await pipeline.run();
@@ -117,7 +133,7 @@ test('“another export is running” is waited out, not surfaced', async () => 
   const now = { at: 2_000_000 };
   const { errors, retries, handlers } = events();
   try {
-    const pipeline = new Pipeline(fakeStore(), noEngine, handlers, () => now.at);
+    const pipeline = new Pipeline(fakeStore(), flatEngine, handlers, () => now.at);
     await pipeline.run();
     assert.equal(fetch.state.calls, 2, 'retried once');
     assert.deepEqual(errors, [], 'and said nothing to the user about it');
@@ -125,6 +141,83 @@ test('“another export is running” is waited out, not surfaced', async () => 
   } finally {
     fetch.restore();
   }
+});
+
+// The bug: a session with no engine walked backwards through a whole history,
+// stamping every game "looked at, found nothing", and the deck never filled
+// again even once there was an engine. Seen for real on a phone, 70 games.
+test('a game skipped for want of an engine is not stamped, and stops the paging', async () => {
+  const fetch = stubFetch(oneGame);
+  const now = { at: 8_000_000 };
+  const store = fakeStore();
+  const { handlers } = events();
+  try {
+    const pipeline = new Pipeline(store, noEngine, handlers, () => now.at);
+    await pipeline.run();
+    assert.equal(store.stored.length, 1, 'the payload is kept — it was paid for');
+    assert.equal(store.stored[0]!.analysis, undefined, 'and nothing was written on it');
+    const meta = await store.meta();
+    assert.deepEqual(meta.fetched, [], 'not "looked at, found nothing"');
+    assert.deepEqual(meta.analysed, []);
+    assert.equal(pipeline.status(), 'noEngine');
+
+    // And it does not carry on reaching further back collecting payloads it
+    // cannot read. That is the half of the bug that ate seventy games.
+    now.at += 31_000;
+    await pipeline.run();
+    assert.equal(fetch.state.calls, 1);
+  } finally {
+    fetch.restore();
+  }
+});
+
+// The other half: the repair. The backlog is derived from the store rather than
+// from a list in `meta`, so a store already stamped by the broken version heals
+// itself the next time an engine starts.
+test('stored games with no analysis are swept before anything is fetched', async () => {
+  const moves = 'e4 e5 Nf3 Nc6 Ng5 Nf6 Nxf7 Kxf7';
+  const steps = replay(moves.split(' '));
+  const after = [20, 15, 25, 20, -300, -310, -320, -330];
+  const engine: Analyser = {
+    analyse: (req: Request): Promise<EngineLine> => {
+      const i = steps.findIndex(s => s.after === req.fen);
+      return Promise.resolve({
+        depth: 12,
+        score: { cp: i === -1 ? 20 : after[i]! },
+        pv: req.fen === steps[4]!.fen ? ['f1c4', 'f8c5'] : ['e1e2'],
+      });
+    },
+    analyseLines: (req: Request): Promise<EngineLine[]> =>
+      Promise.resolve([{ depth: 20, score: { cp: 30 }, pv: ['f1c4'], multiPv: 1 }]),
+  };
+
+  const store = fakeStore();
+  // Exactly what the broken version left behind: the payload, no analysis, and
+  // the id stamped into `fetched` so it would never be looked at again.
+  store.stored.push({
+    id: 'ddd',
+    createdAt: 1000,
+    variant: 'standard',
+    players: { white: { user: { id: 'someone', name: 'someone' } }, black: {} },
+    moves,
+  } as ExportedGame);
+  await store.setMeta({ analysed: [], fetched: ['ddd'] });
+
+  const { puzzles, handlers } = events();
+  // Blocked from fetching outright: the backlog is not a fetch and must not
+  // wait on one.
+  const fetch = stubFetch(() => new Response('', { status: 429 }));
+  try {
+    await new Pipeline(store, () => Promise.resolve(engine), handlers, () => 0).run();
+  } finally {
+    fetch.restore();
+  }
+
+  assert.equal(store.stored.at(-1)!.analysis?.length, 8, 'swept at last');
+  assert.deepEqual(puzzles.map(p => p.id), ['ddd:5']);
+  const meta = await store.meta();
+  assert.deepEqual(meta.analysed, ['ddd']);
+  assert.deepEqual(meta.fetched, [], 'and moved out of the list that was wrong about it');
 });
 
 test('a 429 that survives the retry backs off hard', async () => {
@@ -168,7 +261,7 @@ test('each batch reaches further back, so the deck is not capped at 20 games', a
   const now = { at: 6_000_000 };
   try {
     const { handlers } = events();
-    const pipeline = new Pipeline(fakeStore(), noEngine, handlers, () => now.at);
+    const pipeline = new Pipeline(fakeStore(), flatEngine, handlers, () => now.at);
     await pipeline.run();
     now.at += 31_000;
     await pipeline.run();

@@ -918,7 +918,11 @@ export class App {
     const pipeline = this.pipeline;
     const status = pipeline?.status() ?? 'idle';
     const message =
-      status === 'full'
+      status === 'noEngine'
+        ? `<span>The engine did not start, so nothing can be prepared and no more games are
+             being fetched — the games already here are kept, unanalysed, and picked up as soon
+             as there is an engine. The report link above carries the diagnostics.</span>`
+        : status === 'full'
         ? `<span>The storage limit is reached, so no more games are being fetched — nothing
              stored has been deleted. Settings can raise the limit or purge older games.</span>`
         : status === 'exhausted'

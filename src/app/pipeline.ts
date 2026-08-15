@@ -46,6 +46,12 @@ export interface Progress {
 const BATCH = 20;
 
 /**
+ * The engine did not start. Its own thing, because it is the one failure that
+ * must not be recorded against the *game* — see `sweepBacklog`.
+ */
+export class NoEngine extends Error {}
+
+/**
  * lichess allows **one games export per IP at a time**, and the callers here
  * are hair-triggered: the deck asks for more after every solve it finishes
  * thin, and at the end of the deck, on every click. Without a governor that is
@@ -94,6 +100,16 @@ export class Pipeline {
   private full = false;
   /** The catch-up ranking pass is a once-per-session thing. */
   private backlogDone = false;
+  /** So is the catch-up *analysis* pass, for games stored but never swept. */
+  private sweepBacklogDone = false;
+  /**
+   * The engine could not be started this session. `App.engine()` caches its
+   * failure, so nothing will change until the page is reloaded — which makes
+   * this both a fact and a decision: stop asking lichess for games we have no
+   * way to analyse, rather than paging backwards through someone's whole
+   * history collecting payloads nothing can read.
+   */
+  private engineDown = false;
   /** Injectable so the governor can be tested without waiting 30 real seconds. */
   private readonly now: () => number;
 
@@ -128,6 +144,13 @@ export class Pipeline {
       // the deck fill at all on the first run after the ranking arrived, since
       // every stored game is withholding its positions until it has one.
       await this.rankBacklog();
+      // Games that were stored and then never analysed — the engine was not
+      // there when their turn came. Before the fetch for the same reason: they
+      // are paid for, and they are the reason the deck is empty.
+      await this.sweepBacklog();
+      // No engine means nothing that arrives can be analysed, so fetching more
+      // only walks backwards through the history collecting payloads. Stop.
+      if (this.engineDown) return;
       // Asking lichess for games we have already decided not to keep is a
       // request against a one-per-IP limit for nothing.
       const limit = settings().maxGames;
@@ -171,8 +194,10 @@ export class Pipeline {
   }
 
   /** Why the deck is not filling, for the UI to say out loud. */
-  status(): 'idle' | 'working' | 'waiting' | 'exhausted' | 'full' {
+  status(): 'idle' | 'working' | 'waiting' | 'exhausted' | 'full' | 'noEngine' {
     if (this.running) return 'working';
+    // Ahead of everything else: with no engine nothing else is the reason.
+    if (this.engineDown) return 'noEngine';
     if (this.full) return 'full';
     if (this.exhausted) return 'exhausted';
     return this.mayFetch() ? 'idle' : 'waiting';
@@ -267,7 +292,7 @@ export class Pipeline {
     try {
       for (const [i, { game, tasks }] of work.entries()) {
         await this.gate();
-        await rankCandidates(await this.engine(), game.analysis!, tasks, {
+        await rankCandidates(await this.analyser(), game.analysis!, tasks, {
           movetime: rankMs,
           signal: this.abort.signal,
           beforeEach: () => this.gate(),
@@ -291,6 +316,40 @@ export class Pipeline {
     } finally {
       this.emit({ backlog: 0, engineBusy: false, current: undefined });
     }
+  }
+
+  /**
+   * Analyse stored games that carry no evals at all — once per session, after
+   * the ranking backlog and before any fetching.
+   *
+   * **This is the repair for a session that ran without an engine.** A game is
+   * written to the store the moment it is fetched, and analysed afterwards; if
+   * the engine was not there for the second half, the game sits in the store
+   * with nothing on it. It used to be stamped into `meta.fetched` — "looked at,
+   * found nothing" — and so was never looked at again, which is how a phone
+   * that failed to boot the engine once walked backwards through seventy games
+   * and ended with an empty deck for good.
+   *
+   * The backlog is therefore **derived from the store, not from a list in
+   * `meta`**. "A stored game with no analysis that `prepareGame` accepts" is
+   * exactly the set of games that owe the engine a pass, it needs no new field
+   * and so no schema bump, and — the reason it is worth preferring — it repairs
+   * stores that were *already* wrongly stamped, which a list written from here
+   * on could not. `prepareGame` is the cheap half of the check and is what
+   * keeps a genuinely unplayable game (wrong variant, four plies long, a move
+   * list chessops rejects) out of the backlog for good rather than re-queued
+   * every session.
+   */
+  private async sweepBacklog(): Promise<void> {
+    if (this.sweepBacklogDone || this.engineDown) return;
+    this.sweepBacklogDone = true;
+    const work = (await this.profile.games()).filter(
+      game => !game.analysis?.length && prepareGame(game, this.profile.username),
+    );
+    if (!work.length) return;
+    this.queue.push(...work);
+    this.emit({ gamesPending: this.queue.length });
+    await this.drain();
   }
 
   private async fetchBatch(): Promise<void> {
@@ -341,6 +400,18 @@ export class Pipeline {
         await this.markDone(game.id, puzzles.length > 0);
       } catch (e) {
         if (e instanceof Aborted) throw e;
+        if (e instanceof NoEngine) {
+          // **Do not stamp it.** A game skipped for want of an engine has not
+          // been "looked at and found nothing" — nobody has looked. Leaving it
+          // in the store with no analysis is what puts it in `sweepBacklog`
+          // next session, and stopping here rather than grinding through the
+          // rest of the queue keeps the same true of those.
+          console.warn('no engine; leaving', game.id, 'unanalysed');
+          this.queue.length = 0;
+          this.emit({ gamesPending: 0, engineBusy: false, current: undefined });
+          this.events.onError(e);
+          return;
+        }
         // One unplayable game must not stop the deck filling.
         console.warn('skipping', game.id, e);
         await this.markDone(game.id, false);
@@ -352,8 +423,33 @@ export class Pipeline {
   private markDone(id: string, produced: boolean): Promise<void> {
     return this.remember(meta => {
       const list = produced ? meta.analysed : meta.fetched;
+      const other = produced ? meta.fetched : meta.analysed;
       if (!list.includes(id)) list.push(id);
+      // A game re-analysed out of the backlog may already be stamped the other
+      // way — that is the bug this pass repairs — so move it rather than let it
+      // sit in both lists.
+      const stale = other.indexOf(id);
+      if (stale >= 0) other.splice(stale, 1);
     });
+  }
+
+  /**
+   * The engine, with any reason it could not start collapsed into one error the
+   * rest of this file can recognise.
+   *
+   * It has to be recognisable. "There is no engine" and "this game is
+   * unplayable" want opposite answers — try again next session, versus never
+   * again — and `App.engine()` rejects with whatever actually went wrong, which
+   * for a dropped 15 MB net download is a `TypeError` and for a page that is
+   * not cross-origin isolated is an `EngineUnavailable`.
+   */
+  private async analyser(): Promise<Analyser> {
+    try {
+      return await this.engine();
+    } catch (e) {
+      this.engineDown = true;
+      throw new NoEngine(String((e as Error)?.message ?? e));
+    }
   }
 
   /**
@@ -391,7 +487,7 @@ export class Pipeline {
     });
     if (tasks.length && game.analysis) {
       this.emit({ engineBusy: true });
-      await rankCandidates(await this.engine(), game.analysis, tasks, {
+      await rankCandidates(await this.analyser(), game.analysis, tasks, {
         movetime: settings().rankMs,
         signal: this.abort.signal,
         beforeEach: () => this.gate(),
@@ -410,7 +506,7 @@ export class Pipeline {
     maxCandidates: number,
   ) {
     this.emit({ engineBusy: true });
-    const engine = await this.engine();
+    const engine = await this.analyser();
     return analyseGame(engine, steps, {
       pov,
       maxCandidates,
