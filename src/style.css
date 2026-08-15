@@ -563,33 +563,49 @@ button.danger:hover {
 
 /* auto-fill rather than auto-fit: a single card should stay card-sized instead
    of stretching to the full width of the dialog. */
+/* One column, always. A responsive grid put four boards across a desktop
+   window, which reads as a contact sheet rather than a list: the thumbnails
+   were too small to see a position in and the eye had nowhere to run down. So
+   the card turns on its side instead — a board at a readable fixed size, the
+   caption beside it, the button on the end. */
 .deck-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 1rem;
+  grid-template-columns: 1fr;
+  gap: 0.6rem;
   list-style: none;
   margin: 1rem 0 0;
   padding: 0;
 }
 
 .deck-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.2rem 1rem;
   padding: 0.6rem;
   border: 1px solid var(--line);
   border-radius: 4px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
 }
 
-/* The board is the card. Everything under it is caption. */
+/* Fixed rather than a share of the row: a board has to be big enough to read a
+   position off, and no bigger — this is a list, not the board being played on. */
 .deck-card .mini {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 132px;
   aspect-ratio: 1;
-  width: 100%;
 }
 
 .deck-card-text {
+  grid-column: 2;
+  grid-row: 1;
   line-height: 1.35;
+}
+
+.deck-card-meta {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .deck-card-text .dim,
@@ -599,19 +615,42 @@ button.danger:hover {
   color: var(--dim);
 }
 
-/* Push the button to the bottom, so cards with one line of caption and cards
-   with three still line their buttons up. */
 .deck-card button {
-  margin-top: auto;
-  align-self: flex-start;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  white-space: nowrap;
 }
 
 .deck-card-meta a {
   color: inherit;
 }
 
+/* Narrow enough that a board, a sentence and a button will not sit in a row:
+   the button drops under the caption rather than squeezing either. */
+@media (width <= 560px) {
+  .deck-card {
+    grid-template-columns: auto 1fr;
+  }
+
+  .deck-card .mini {
+    width: 96px;
+  }
+
+  .deck-card button {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: start;
+  }
+}
+
+/* Nothing to put in column one, so it is a single column of text. */
 .deck-card.gone {
-  justify-content: center;
+  grid-template-columns: 1fr;
+}
+
+.deck-card.gone .deck-card-text,
+.deck-card.gone .deck-card-meta {
+  grid-column: 1;
 }
 
 .pager {
