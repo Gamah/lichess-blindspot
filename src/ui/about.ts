@@ -25,9 +25,10 @@ export const steps = (): string => `
   <ol class="steps">
     <li>
       <h2>Your games, from lichess</h2>
-      <p>Straight from the public API — no account, no token, nothing to authorise. Twenty
-        at a time, and when you work through those it reaches further back into your
-        history, for as long as you have games.</p>
+      <p>Straight from the public API — no account, no token, nothing to authorise. Every
+        session starts by picking up whatever you have played since it last looked, then
+        works backwards through your history for as long as you have games. Settings decides
+        how far back that goes and how many arrive at a time.</p>
     </li>
     <li>
       <h2>Analysed here, in this tab</h2>

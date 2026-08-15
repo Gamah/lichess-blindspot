@@ -17,7 +17,10 @@ works fine.
 
 ## How it works
 
-1. Fetch the last N games from the public lichess API. No account, no token.
+1. Fetch your games from the public lichess API. No account, no token. Each
+   session picks up whatever you have played since it last looked, then works
+   backwards through your history; Settings decides how far back it reaches and
+   how many games arrive per request.
 2. Analyse them in the browser with Stockfish (WASM). Games that lichess has
    already analysed ship their evals in the export and skip the engine.
 3. Find the eval swings on that player's moves — the same rule lila uses
@@ -93,7 +96,14 @@ running in a tab: every position is searched before you see it, so a long
 history means minutes of sustained load the first time through. On a phone that
 is a warm device and a real dent in the battery — it says so, and it is worth
 plugging in for. Settings can lower the positions taken from each game, the
-thinking time, the number of cores, and how many games to keep at all.
+thinking time, the number of cores, how far back it fetches, and how many games
+to keep at all.
+
+**New games arrive by themselves.** Blindspot keeps two cursors: how far back it
+has reached, and the newest game it has ever taken in. A session starts by
+asking lichess for everything since the second of those, so playing a few games
+and coming back gets you those games — the deck used to page backwards only, so
+anything played after your first visit was unreachable.
 
 ## Development
 

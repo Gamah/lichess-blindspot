@@ -11,7 +11,7 @@ import { analyseGame, rankCandidates, Aborted } from '../engine/analyse.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, fetchGames, type ExportedGame } from '../lichess/export.ts';
 import type { Meta, Profile } from '../storage/db.ts';
-import { settings } from '../storage/prefs.ts';
+import { historyFloor, settings } from '../storage/prefs.ts';
 
 export interface PipelineEvents {
   /**
@@ -43,7 +43,26 @@ export interface Progress {
   backlog?: number;
 }
 
-const BATCH = 20;
+/** Why the deck is not filling. `full`, `horizon` and `exhausted` are all "stopped". */
+export type Status =
+  | 'idle'
+  | 'working'
+  | 'waiting'
+  | 'exhausted'
+  | 'horizon'
+  | 'full'
+  | 'noEngine';
+
+/** The edges of one export, for whichever cursor is going to move. */
+interface Batch {
+  /** Games lichess sent, including ones already held. Short means caught up. */
+  total: number;
+  /** `createdAt` of the oldest and newest it sent, over all of them. */
+  oldest?: number | undefined;
+  newest?: number | undefined;
+  /** How many were actually new to us. */
+  kept: number;
+}
 
 /**
  * The engine did not start. Its own thing, because it is the one failure that
@@ -91,7 +110,31 @@ export class Pipeline {
   private memo: Meta | undefined;
   private lastExportAt = -Infinity;
   private blockedUntil = 0;
-  private exhausted = false;
+  /**
+   * Reaching further back is over: an empty batch came back. Its counterpart is
+   * `refreshDone`, and the two are separate because they are separate
+   * questions — "lichess has nothing older" and "lichess has nothing newer" are
+   * different sentences on the exhausted screen, and only the first one is
+   * permanent.
+   */
+  private noOlder = false;
+  /**
+   * `noOlder` was reached at the "how far back" floor rather than at the first
+   * game they ever played. Indistinguishable from lichess' side — both are an
+   * empty batch — so this is what the *setting* was, and the copy says so
+   * rather than claiming to know which.
+   */
+  private horizon = false;
+  /** The forward refresh has caught up with lichess; once per session. */
+  private refreshDone = false;
+  /** Newest `createdAt` seen by this session's refresh, before it has finished. */
+  private refreshTop: number | undefined;
+  /** Cursor *within* a refresh that took more than one batch. */
+  private refreshUntil: number | undefined;
+  /** Games the refresh brought in, for the exhausted screen to report. */
+  private newGames = 0;
+  /** `meta.newest` has been worked out for stores written before it existed. */
+  private seeded = false;
   /**
    * The storage limit is reached, so no more games are being kept. Not the
    * same as `exhausted` — there are more games, we are choosing not to hold
@@ -155,7 +198,11 @@ export class Pipeline {
       // request against a one-per-IP limit for nothing.
       const limit = settings().maxGames;
       this.full = limit > 0 && (await this.profile.gameCount()) >= limit;
-      if (this.full || !this.mayFetch()) return;
+      if (this.full) return;
+      // Before the first export of the session, so the refresh knows where
+      // "new" starts even in a store written before the cursor existed.
+      await this.seedNewest();
+      if (!this.mayFetch()) return;
       this.lastExportAt = this.now();
       await this.fetchWithRetry();
       await this.drain();
@@ -194,13 +241,25 @@ export class Pipeline {
   }
 
   /** Why the deck is not filling, for the UI to say out loud. */
-  status(): 'idle' | 'working' | 'waiting' | 'exhausted' | 'full' | 'noEngine' {
+  status(): Status {
     if (this.running) return 'working';
     // Ahead of everything else: with no engine nothing else is the reason.
     if (this.engineDown) return 'noEngine';
     if (this.full) return 'full';
-    if (this.exhausted) return 'exhausted';
+    // `horizon` first: "you told me to stop here" is a different sentence from
+    // "there is nothing left", and only one of them has an answer in Settings.
+    if (this.noOlder && this.refreshDone) return this.horizon ? 'horizon' : 'exhausted';
     return this.mayFetch() ? 'idle' : 'waiting';
+  }
+
+  /**
+   * What the session's look for new games found, for the exhausted screen. Its
+   * own accessor rather than a `status`, because it is true *alongside* every
+   * other status rather than instead of one: the deck can be exhausted, and
+   * separately have been brought up to date on the way there.
+   */
+  refresh(): { done: boolean; found: number } {
+    return { done: this.refreshDone, found: this.newGames };
   }
 
   /** When the next fetch becomes possible, in ms from now. 0 if it already is. */
@@ -209,7 +268,7 @@ export class Pipeline {
   }
 
   private mayFetch(): boolean {
-    return !this.exhausted && this.waitMs() === 0;
+    return (!this.noOlder || !this.refreshDone) && this.waitMs() === 0;
   }
 
   /**
@@ -225,6 +284,22 @@ export class Pipeline {
   /** Raising the storage limit, or purging, un-sticks a full store. */
   recheckFull(): void {
     this.full = false;
+  }
+
+  /**
+   * Reaching further back is worth trying again. Only "how far back" moves this:
+   * the paging stopped at a floor that has since been lowered, so the games
+   * beyond it are reachable now and were not a moment ago.
+   *
+   * Deliberately also clears a `noOlder` that lichess itself caused. It costs
+   * one export against a history that will answer empty again, and the
+   * alternative is remembering *which* of the two reasons stopped us and being
+   * wrong about it — the two are indistinguishable from an empty batch, which
+   * is the whole reason `horizon` exists.
+   */
+  recheckReach(): void {
+    this.noOlder = false;
+    this.horizon = false;
   }
 
   pause(): void {
@@ -352,21 +427,133 @@ export class Pipeline {
     await this.drain();
   }
 
+  /**
+   * Work out where "new" starts, for a store that has none written down.
+   *
+   * `meta.newest` is the forward cursor and it is optional, because it did not
+   * exist when some stores were written. Absent must not mean "the beginning of
+   * time" — that would refresh someone's entire history through a filter that
+   * dedup then throws away — so it is taken from the newest game held. A store
+   * with no games at all keeps it undefined, and the first backwards batch
+   * seeds it from what lichess sends.
+   */
+  private async seedNewest(): Promise<void> {
+    if (this.seeded) return;
+    this.seeded = true;
+    const meta = await this.state();
+    if (meta.newest !== undefined) return;
+    const newest = (await this.profile.games())[0]?.createdAt;
+    if (newest !== undefined) await this.remember(m => (m.newest = newest));
+  }
+
+  /**
+   * One export, in whichever direction is owed.
+   *
+   * **Forward first, and only once per session.** New games are the ones a
+   * returning player is most likely to want reviewed and the only ones the old
+   * single cursor could never reach; older ones have been there for months and
+   * can wait the thirty seconds until the next export. Once the refresh has
+   * caught up, every later batch reaches further back as before.
+   */
   private async fetchBatch(): Promise<void> {
+    const meta = await this.state();
+    if (!this.refreshDone && meta.newest !== undefined) return this.fetchNewer(meta.newest);
+    return this.fetchOlder(meta);
+  }
+
+  /**
+   * Games played since the newest one we hold.
+   *
+   * It can take more than one batch — someone who has not been here for a month
+   * may have a hundred new games and the batch is twenty — and the export is
+   * newest-first, so it pages *backwards* within the refresh: `since` stays at
+   * the old high-water mark and `until` walks down through the new games until
+   * a batch comes back short.
+   *
+   * `meta.newest` moves only when that happens. Advancing it per batch would
+   * leave the games below the last one fetched in a window nothing ever looks
+   * at again: `until` is already past them and `since` would now be above them.
+   */
+  private async fetchNewer(newest: number): Promise<void> {
+    const max = settings().batchSize;
+    const batch = await this.consume({
+      max,
+      since: newest + 1,
+      ...(this.refreshUntil !== undefined ? { until: this.refreshUntil } : {}),
+    });
+    this.newGames += batch.kept;
+    if (batch.newest !== undefined)
+      this.refreshTop = Math.max(this.refreshTop ?? batch.newest, batch.newest);
+    // The limit was hit partway through, so this batch is not the whole answer
+    // and neither cursor may move. Nothing more is fetched this session anyway.
+    if (this.full) return;
+    if (batch.total >= max && batch.oldest !== undefined) {
+      this.refreshUntil = batch.oldest - 1;
+      return;
+    }
+    this.refreshDone = true;
+    this.refreshUntil = undefined;
+    const top = this.refreshTop;
+    if (top !== undefined) await this.remember(m => (m.newest = Math.max(m.newest ?? 0, top)));
+  }
+
+  /** The next batch further back, stopping at the "how far back" floor. */
+  private async fetchOlder(meta: Meta): Promise<void> {
+    const floor = historyFloor(this.now());
+    const batch = await this.consume({
+      max: settings().batchSize,
+      ...(meta.until !== undefined ? { until: meta.until } : {}),
+      ...(floor !== undefined ? { since: floor } : {}),
+    });
+    // A first session has no forward cursor until lichess names one, and the
+    // newest of this newest-first first batch is exactly it. Either way there
+    // was nothing newer to go and look for, so the refresh is done rather than
+    // owed — without this an empty history would be asked for its new games
+    // once every thirty seconds, forever.
+    if (meta.newest === undefined) {
+      if (batch.newest !== undefined) {
+        const top = batch.newest;
+        await this.remember(m => (m.newest ??= top));
+      }
+      this.refreshDone = true;
+    }
+    // Same as in the refresh: a batch cut short by the storage limit has not
+    // been paged through, so moving the cursor past it would lose the rest for
+    // good — the limit is meant to stop us keeping games, not to hide them.
+    if (this.full) return;
+    // Page backwards from the oldest game of this batch next time. Without this
+    // the second batch is the first batch.
+    if (batch.oldest !== undefined) await this.remember(m => (m.until = batch.oldest! - 1));
+    // No games at all means we have reached the end of what we are asking for:
+    // the first game they ever played, or the floor, and from here those look
+    // identical. Asking again would get the same nothing, forever.
+    if (batch.total === 0) {
+      this.noOlder = true;
+      this.horizon = floor !== undefined;
+    }
+  }
+
+  /**
+   * Read one export to the end, keep what is new, and report the edges of what
+   * came back. Shared by both directions, which differ only in the window they
+   * ask for and in which cursor they move afterwards.
+   */
+  private async consume(params: { max: number; until?: number; since?: number }): Promise<Batch> {
     const meta = await this.state();
     const seen = new Set([...meta.analysed, ...meta.fetched]);
     const limit = settings().maxGames;
     let held = limit ? await this.profile.gameCount() : 0;
     let oldest: number | undefined;
+    let newest: number | undefined;
     let total = 0;
     const games: ExportedGame[] = [];
     for await (const game of fetchGames(this.profile.username, {
-      max: BATCH,
-      ...(meta.until !== undefined ? { until: meta.until } : {}),
+      ...params,
       signal: this.abort.signal,
     })) {
       total++;
       oldest = Math.min(oldest ?? game.createdAt, game.createdAt);
+      newest = Math.max(newest ?? game.createdAt, game.createdAt);
       if (seen.has(game.id)) continue;
       // The limit stops us taking more, it never deletes what is held. Break
       // rather than skip: `fetchGames` cancels the reader in a `finally`, and
@@ -379,14 +566,9 @@ export class Pipeline {
       games.push(game);
       await this.profile.putGame(game);
     }
-    // Page backwards from the oldest game of this batch next time. Without this
-    // the second batch is the first batch.
-    if (oldest !== undefined) await this.remember(m => (m.until = oldest - 1));
-    // No games at all means we have paged back past the first one they ever
-    // played. Asking again would get the same nothing, forever.
-    if (total === 0) this.exhausted = true;
     this.queue.push(...games);
     this.emit({ gamesPending: this.queue.length });
+    return { total, oldest, newest, kept: games.length };
   }
 
   private async drain(): Promise<void> {

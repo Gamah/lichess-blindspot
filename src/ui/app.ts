@@ -565,6 +565,27 @@ export class App {
       </div>
 
       <div class="setting">
+        <label for="history-days">How far back</label>
+        <select id="history-days">${historyOptions()}</select>
+        <p class="hint">How far into your history to reach for games. Each session starts by
+          asking lichess for anything you have played <em>since it last looked</em>, whatever this
+          says — new games always arrive. This governs the other direction: how far back it keeps
+          going once it has caught up. Lowering it does not delete the older games already here,
+          and raising it sets it going again from where it stopped. To limit by number of games
+          instead of by date, use "games to keep" below.</p>
+      </div>
+
+      <div class="setting">
+        <label for="batch-size">Games per fetch</label>
+        <select id="batch-size">${batchOptions()}</select>
+        <p class="hint">How many games one request asks for. lichess allows one export at a time
+          per address, so Blindspot asks at most once every 30 seconds however this is set — a
+          bigger batch therefore reaches further per request, at the cost of a longer wait before
+          the first game of it has been analysed. It is not a speed setting: the engine works
+          through them one at a time either way.</p>
+      </div>
+
+      <div class="setting">
         <label for="max-games">Games to keep</label>
         <select id="max-games">${gameLimitOptions()}</select>
         <p class="hint">Stops fetching once this many games are stored${
@@ -665,6 +686,30 @@ export class App {
           : `${seconds(value)} a position. Positions already given longer keep their ranking.`,
       );
       if (value > previous) void this.refill();
+    };
+    (panel.querySelector('#history-days') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      const previous = settings().historyDays;
+      saveSettings({ historyDays: value });
+      // Reaching further back is worth trying again whichever way this moved:
+      // the paging may have stopped at a floor that has just been lowered, and
+      // "no more older games" and "we stopped where you said" are the same
+      // empty batch from lichess' side, so we cannot tell which it was.
+      this.pipeline?.recheckReach();
+      status(
+        value === 0
+          ? 'Reaching back for as long as there are games. Nothing already stored is affected.'
+          : `Fetching games from the last ${historyLabel(value)}. Older ones already here are kept.`,
+      );
+      // Widening the window is the case that has something to go and get.
+      if (value === 0 || previous === 0 || value > previous) void this.refill();
+    };
+    (panel.querySelector('#batch-size') as HTMLSelectElement).onchange = e => {
+      const value = Number((e.target as HTMLSelectElement).value);
+      saveSettings({ batchSize: value });
+      // Nothing to re-open: it is read afresh on the next export, and the
+      // governor decides when that is.
+      status(`Asking for ${value} games at a time, from the next request on.`);
     };
     (panel.querySelector('#max-games') as HTMLSelectElement).onchange = e => {
       const value = Number((e.target as HTMLSelectElement).value);
@@ -1193,16 +1238,30 @@ export class App {
   }
 
   /**
-   * Four different things can be true when the deck is empty, and they call for
-   * four different sentences — particularly "there are no more games", which is
+   * Several different things can be true when the deck is empty, and they call
+   * for different sentences — particularly "there are no more games", which is
    * the only one that means stop waiting.
+   *
+   * Two of them are the *same* empty batch from lichess and are told apart by
+   * what we asked for: reaching the end of a history, and reaching the "how far
+   * back" floor. Only the second has an answer in Settings, so only the second
+   * points at it.
+   *
+   * The look for new games is reported alongside whichever of those applies
+   * rather than instead of one, because it is a different question — someone
+   * whose deck is empty because they have solved all of it wants to know that
+   * this session did go and check.
    */
   private paintExhausted(): void {
     if (!this.awaitingPuzzles) return;
     const pipeline = this.pipeline;
     const status = pipeline?.status() ?? 'idle';
     const message =
-      status === 'noEngine'
+      status === 'horizon'
+        ? `<span>That is every game you have played in the last
+             ${historyLabel(settings().historyDays)} — Settings can reach further back, and the
+             games already here are kept whatever it says.${newGames(pipeline)}</span>`
+        : status === 'noEngine'
         ? `<span>The engine did not start, so nothing can be prepared and no more games are
              being fetched — the games already here are kept, unanalysed, and picked up as soon
              as there is an engine. The report link above carries the diagnostics.</span>`
@@ -1210,7 +1269,8 @@ export class App {
         ? `<span>The storage limit is reached, so no more games are being fetched — nothing
              stored has been deleted. Settings can raise the limit or purge older games.</span>`
         : status === 'exhausted'
-        ? '<span>That is every game lichess has for you. Come back after a few more.</span>'
+        ? `<span>That is every game lichess has for you. Come back after a few
+             more.${newGames(pipeline)}</span>`
         : status === 'working'
           ? '<span>Analysing older games — the next position will appear here by itself.</span>'
           : status === 'waiting'
@@ -1219,7 +1279,10 @@ export class App {
             : '<span>Fetching older games — the next position will appear here by itself.</span>';
     this.setFeedback(`<strong>That is the deck, for now.</strong> ${message}`);
     clearTimeout(this.exhaustedTimer);
-    if (status !== 'exhausted') this.exhaustedTimer = setTimeout(() => this.paintExhausted(), 1000);
+    // Both of the "there is nothing more to fetch" statuses are final; every
+    // other one is waiting on something that will change by itself.
+    if (status !== 'exhausted' && status !== 'horizon')
+      this.exhaustedTimer = setTimeout(() => this.paintExhausted(), 1000);
   }
 
   // --- small bits ---------------------------------------------------------
@@ -1349,6 +1412,51 @@ function gameLimitOptions(): string {
           n === 0 ? 'no limit' : `${n} games (~${mb(n * BYTES_PER_GAME)})`
         }</option>`,
     )
+    .join('');
+}
+
+/**
+ * What this session's look for new games found, appended to whichever
+ * "nothing more to fetch" sentence applies.
+ *
+ * Worth saying out loud precisely because it used not to happen at all: the
+ * pipeline had one cursor and it only moved backwards, so games played since
+ * the last visit were unreachable and the honest sentence would have been "we
+ * did not look". It looks now, and an empty deck is a much better answer when
+ * it comes with the fact that there was nothing new to put in it.
+ */
+function newGames(pipeline: Pipeline | undefined): string {
+  const refresh = pipeline?.refresh();
+  if (!refresh?.done) return '';
+  return refresh.found
+    ? ` ${refresh.found} new game${refresh.found === 1 ? '' : 's'} came in when you started.`
+    : ' Nothing new since your last visit, either.';
+}
+
+/** Days, as something to read: the dial is a date, the copy should be one too. */
+const historyLabel = (days: number): string =>
+  days % 365 === 0
+    ? `${days / 365} year${days === 365 ? '' : 's'}`
+    : days % 30 === 0
+      ? `${days / 30} month${days === 30 ? '' : 's'}`
+      : `${days} days`;
+
+function historyOptions(): string {
+  const chosen = settings().historyDays;
+  return [30, 90, 180, 365, 730, 0]
+    .map(
+      days =>
+        `<option value="${days}"${days === chosen ? ' selected' : ''}>${
+          days === 0 ? 'as far as it goes' : `the last ${historyLabel(days)}`
+        }</option>`,
+    )
+    .join('');
+}
+
+function batchOptions(): string {
+  const chosen = settings().batchSize;
+  return [5, 10, 20, 50, 100]
+    .map(n => `<option value="${n}"${n === chosen ? ' selected' : ''}>${n} games</option>`)
     .join('');
 }
 

@@ -30,6 +30,16 @@ Facts established 2026-08-14 by reading lila at `lichess-org/lila@master`:
 - `POST /:id/request-analysis` is `AuthOrScoped(_.Web.Mobile)` — the official app
   only. **We can never queue server analysis.** That is why the engine runs here.
 - `division=true` gives `{middle, end}` plies, used to skip opening-book moves.
+- Paging, from the apidoc 2026-08-15 (spec 2.0.163, `doc/specs/tags/games/
+  api-games-user-username.yaml`): `since` is "games played since this
+  timestamp", `until` is "until this timestamp", both ms and both with a
+  **minimum of 1356998400070** (2013-01-01), and `max` is a count. `sort`
+  defaults to **`dateDesc`** — newest first — which is what the forward refresh's
+  paging assumes. We do **not** pass `sort=dateAsc`, though it would make the
+  refresh a simple contiguous walk upwards: the whole cursor design rests on the
+  order, and a documented default that lila honours today is a safer thing to
+  rest on than an optional parameter we would be the only caller of. Re-check
+  before changing that.
 - **The masters explorer is not available to us.**
   `https://explorer.lichess.ovh/masters` is CORS-open but answers `401` to
   everything: from this host by curl, and from a browser on an ordinary
@@ -444,7 +454,7 @@ piece" are different results and one figure covering both would flatter.
 
 ## The settings, and what each one is allowed to touch
 
-Four dials, and the boundaries between them are the design:
+Six dials, and the boundaries between them are the design:
 
 - **Difficulty** — the verdict only. Reads the stored ranking; changes nothing
   about what is stored or fetched, so it takes effect on the next move tried.
@@ -469,6 +479,59 @@ Four dials, and the boundaries between them are the design:
   stamped with `MOBILE_GAME_LIMIT` rather than unlimited, since that is where
   an unbounded database is both slowest to build and likeliest to be evicted
   wholesale.
+- **How far back** (`historyDays`) — a floor on *fetching backwards*, passed to
+  the export as `since` on every backwards batch. Deliberately a date, because
+  the count is `maxGames` and two dials in the same units are two answers to one
+  question. It never touches the forward refresh: **new games arrive whatever it
+  says**, which is what makes it a reach rather than a window. Lowering it
+  deletes nothing, same rule as `maxGames`; `recheckReach()` re-opens the paging
+  after any change to it.
+- **Games per fetch** (`batchSize`) — how many games one export asks for. Not a
+  rate: `EXPORT_GAP` decides when we ask, so this only changes how far one
+  request reaches and how long the first game of it waits behind the rest.
+
+## Two cursors, and why the second one had to exist
+
+`meta.until` only ever moves backwards (`until = oldest - 1`), so once a session
+had paged past the newest game it ever saw, **a returning player's new games
+were unreachable** — the deck could only ever grow backwards into history. So
+`meta.newest` is the forward cursor: the `createdAt` of the newest game ever
+taken in, and the session's first export asks for everything `since` it.
+
+- **Forward first, once per session, then backwards for the rest of it.**
+  `fetchBatch` dispatches on `refreshDone`. New games are what someone came back
+  for and are the ones the old cursor could never reach; games from three years
+  ago have waited this long and can wait for the next 30-second slot.
+- **A refresh can take several batches, and pages backwards inside itself.** The
+  export is newest-first, so `since` stays pinned at the old high-water mark
+  while `refreshUntil` walks down through the new games until a batch comes back
+  short. `meta.newest` moves **only when that happens**: advancing it per batch
+  would strand the games below the last one fetched in a window nothing ever
+  looks at again — `until` already past them, `since` now above them. An
+  interrupted refresh therefore re-does itself next session and dedup absorbs
+  the cost, which is the cheap failure.
+- **A batch cut short by `maxGames` moves no cursor at all**, in either
+  direction. The limit is meant to stop us keeping games, not to hide them from
+  a later session that raises it. (The old code moved `until` past the game it
+  broke on, losing it for good.)
+- `exhausted` split in two. `noOlder` is "an empty batch came back"; `horizon`
+  says that happened with a floor set. **Those two are indistinguishable from
+  lichess' side** — both are an empty batch — so `horizon` reports what *we
+  asked for*, not what lichess has, and the copy says "every game in the last N
+  months" rather than claiming the history ended. `recheckReach()` clears both
+  for the same reason: we cannot tell which one stopped us.
+- `Pipeline.refresh()` is an accessor rather than a `status`, because "we looked
+  for new games and there were none" is true *alongside* every status rather
+  than instead of one.
+- `seedNewest()` covers stores written before the cursor existed: absent
+  `meta.newest` means "the newest game held", never "the beginning of time" —
+  which would refresh an entire history through a filter that dedup then throws
+  away. A store with no games leaves it undefined and the first backwards batch
+  seeds it, marking the refresh done, since there is nothing newer than the
+  newest thing lichess just sent.
+
+`Store` did not need widening: the forward cursor lives in `Meta`, and
+`seedNewest` uses `profile.games()`, which was already in the `Pick`.
 
 ## This uses the processor, and that is the point
 
@@ -742,7 +805,7 @@ behind the original report were never reproduced and never will be from here.
 ## Storage
 
 - IndexedDB via `idb-keyval`, one store per username. Four keys and no others:
-  `game:<id>`, `solve:<gameId>:<ply>`, `meta` (the paging cursor) and `schema`.
+  `game:<id>`, `solve:<gameId>:<ply>`, `meta` (the paging cursors, both directions) and `schema`.
 - localStorage only for tiny prefs (last username, positions per game, threads,
   difficulty). It is a separate, fixed ~5 MiB box, not a slice of the IndexedDB
   quota. Prefs are per browser, not per username: choosing a difficulty once
