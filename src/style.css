@@ -628,10 +628,17 @@ button.danger:hover {
   color: var(--dim);
 }
 
-.deck-card button {
+.deck-card-actions {
   grid-column: 3;
   grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.deck-card-actions button {
   white-space: nowrap;
+  width: 100%;
 }
 
 .deck-card-meta a {
@@ -649,10 +656,15 @@ button.danger:hover {
     width: 96px;
   }
 
-  .deck-card button {
+  .deck-card-actions {
     grid-column: 2;
     grid-row: 3;
-    justify-self: start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .deck-card-actions button {
+    width: auto;
   }
 }
 
@@ -673,4 +685,85 @@ button.danger:hover {
   gap: 1rem;
   margin-top: 1rem;
   font-size: 0.9rem;
+}
+
+/* --- the stats block --- */
+
+/* Figures first, because "how many and how often" is what someone opening this
+   wants; the bars underneath are the part worth reading slowly. */
+.stat-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem 1rem;
+  list-style: none;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0;
+}
+
+.stat-figures li {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-figures strong {
+  font-size: 1.5rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-figures .dim {
+  font-size: 0.8rem;
+}
+
+.stat-bars {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.stat-bars li {
+  display: grid;
+  grid-template-columns: 8rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.stat-label {
+  color: var(--dim);
+}
+
+/* The track is the total and the fill is the share found, so an empty-looking
+   bar is a real answer rather than missing data. */
+.stat-bar {
+  height: 0.5rem;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.stat-bar span {
+  display: block;
+  height: 100%;
+  background: var(--good);
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (width <= 560px) {
+  .stat-bars li {
+    grid-template-columns: 6rem 1fr auto;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+}
+
+/* The second row of controls under the board: putting a position aside is not
+   part of solving it, so it sits apart rather than beside Skip. */
+.controls.minor {
+  margin-top: -0.5rem;
 }

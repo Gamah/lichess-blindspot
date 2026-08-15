@@ -100,6 +100,15 @@ export const aboutPanel = (battery: string): string => `
     solve went, and a link into the game on lichess. Any of them can be put back on the board.
     That is a replay — it does not change what was recorded and the position does not rejoin
     the shuffle. Settings can put them <em>all</em> back at once instead.</p>
+  <p><strong>Hide</strong> takes a position out of the shuffle without deleting anything — it
+    moves to a Hidden list and Restore brings it straight back. There is no delete, and that is
+    on purpose: the only thing that could be deleted is the whole game, which would throw away
+    the minutes of engine time spent analysing it for no space worth having. Settings has a
+    purge for when space is actually the problem.</p>
+  <p>The dialog also totals up your solves — how often you find the move without looking, how
+    that varies by which side you were playing and by how bad the mistake was. All of it is
+    arithmetic over what is already stored: a result, a number of tries and a date. Nothing
+    else is recorded and none of it leaves this browser.</p>
 
   <h2>Why this works the processor</h2>
   <p>Every position is searched before anyone is shown it — a quick pass over the whole game

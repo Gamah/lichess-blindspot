@@ -39,10 +39,11 @@ import {
   settings,
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
-import { reviewRows, waitingSummary, type ReviewRow } from '../deck/review.ts';
+import { hiddenRows, lookup, reviewRows, waitingSummary, type ReviewRow } from '../deck/review.ts';
+import { deckStats } from '../deck/stats.ts';
 import { aboutPanel, fineprint, pitch, steps } from './about.ts';
 import { escape, gameUrl, moveNumber, showEval } from './format.ts';
-import { deckPanel, type DeckPages } from './review.ts';
+import { deckPanel, NO_PAGES, type DeckPages } from './review.ts';
 import { Board, miniBoard, type PlayedMove } from './board.ts';
 import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
@@ -84,8 +85,10 @@ export class App {
    * The deck dialog's rows, held only while it is open — closing it drops them
    * so the next open reads fresh records rather than showing a stale list.
    */
-  private deckRows: readonly ReviewRow[] | undefined;
-  private deckPages: DeckPages = { waiting: 0, solved: 0 };
+  private deckRows: { solved: readonly ReviewRow[]; hidden: readonly ReviewRow[] } | undefined;
+  private deckPages: DeckPages = NO_PAGES;
+  /** Games indexed for the dialog, alongside `deckRows` and dropped with them. */
+  private deckGames: ReadonlyMap<string, ExportedGame> = new Map();
   /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
   private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
@@ -233,6 +236,12 @@ export class App {
             <button id="skip">Skip</button>
             <button id="next" hidden>Next position</button>
           </div>
+          <!-- Putting a position aside belongs here as much as in the deck
+               dialog: the moment you want it gone is usually the moment you
+               are looking at it. -->
+          <div class="controls minor">
+            <button id="hide" class="quiet">Hide this position</button>
+          </div>
           <div class="counters" id="counters"></div>
         </aside>
       </main>
@@ -245,6 +254,10 @@ export class App {
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
+    (this.root.querySelector('#hide') as HTMLButtonElement).onclick = () => {
+      const id = this.solve?.puzzle.id;
+      if (id) void this.hidePuzzle(id);
+    };
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
     (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.togglePanel('settings');
     (this.root.querySelector('#about') as HTMLButtonElement).onclick = () => void this.togglePanel('about');
@@ -307,14 +320,26 @@ export class App {
     const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
     const profile = this.profile;
     if (!dialog || !profile) return;
-    this.deckPages = { waiting: 0, solved: 0 };
+    this.deckPages = NO_PAGES;
     dialog.innerHTML = '<p class="hint">Reading your deck…</p>';
     dialog.showModal();
-    const [solves, games] = await Promise.all([profile.solves(), profile.games()]);
-    // Switch player is one click, and two reads are not instant.
+    const [solves, games, hides] = await Promise.all([
+      profile.solves(),
+      profile.games(),
+      profile.hidden(),
+    ]);
+    // Switch player is one click, and three reads are not instant.
     if (this.profile !== profile || !dialog.open) return;
-    const puzzles = [...this.derived.values()].flatMap(entry => entry.puzzles);
-    this.deckRows = reviewRows(solves, puzzles, games);
+    const from = lookup(
+      [...this.derived.values()].flatMap(entry => entry.puzzles),
+      games,
+    );
+    const hiddenIds = new Set(hides.map(h => h.puzzleId));
+    this.deckRows = {
+      solved: reviewRows(solves, from, hiddenIds),
+      hidden: hiddenRows(hides, solves, from),
+    };
+    this.deckGames = from.games;
     this.paintDeck();
   }
 
@@ -329,7 +354,15 @@ export class App {
     const rows = this.deckRows;
     if (!dialog?.open || !rows) return;
     const waiting = this.deck.waiting();
-    dialog.innerHTML = deckPanel(waitingSummary(waiting), waiting, rows, this.deckPages);
+    dialog.innerHTML = deckPanel({
+      summary: waitingSummary(waiting),
+      waiting,
+      games: this.deckGames,
+      solved: rows.solved,
+      hidden: rows.hidden,
+      stats: deckStats(rows.solved, { waiting: waiting.length, hidden: rows.hidden.length }, Date.now()),
+      pages: this.deckPages,
+    });
     (dialog.querySelector('#close') as HTMLButtonElement).onclick = () => dialog.close();
     for (const el of dialog.querySelectorAll<HTMLElement>('.mini[data-fen]'))
       miniBoard(el, el.dataset.fen!, el.dataset.pov === 'black' ? 'black' : 'white', {
@@ -340,6 +373,12 @@ export class App {
       button.onclick = () => void this.fromDeck(button.dataset.review!, true);
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-serve]'))
       button.onclick = () => void this.fromDeck(button.dataset.serve!, false);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-hide]'))
+      button.onclick = () => void this.hidePuzzle(button.dataset.hide!);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-restore]'))
+      button.onclick = () => void this.restorePuzzle(button.dataset.restore!);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-forget]'))
+      button.onclick = () => void this.forgetSolve(button.dataset.forget!);
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-page]')) {
       const [half, page] = button.dataset.page!.split(':') as ['waiting' | 'solved', string];
       button.onclick = () => {
@@ -348,6 +387,69 @@ export class App {
         dialog.scrollTop = 0;
       };
     }
+  }
+
+  // --- putting positions aside, and deleting games -------------------------
+
+  /**
+   * Out of the shuffle, kept, reversible. There is nothing to delete: a puzzle
+   * is derived from its game on every deck build, so the only way one stops
+   * coming round is a note saying so — which is what `hide:` is.
+   *
+   * Works on a solved position too, where it means "take this off the solved
+   * list"; the two facts are independent and the Hidden section shows both.
+   */
+  private async hidePuzzle(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.hide(puzzleId, Date.now());
+    this.deck.markHidden([puzzleId]);
+    // Hiding what is on the board deals the next one, or the position stays up
+    // with nothing behind it.
+    if (this.solve?.puzzle.id === puzzleId) {
+      (this.root.querySelector('#deck-dialog') as HTMLDialogElement | null)?.close();
+      await this.nextPuzzle();
+    }
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  private async restorePuzzle(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.restore(puzzleId);
+    // `Deck` has no un-hide: the set is rebuilt from storage every time, so a
+    // full rebuild is both the simplest correct answer and the cheap one, since
+    // `derivedKey` means nothing is re-derived.
+    await this.buildDeck();
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  /** A solve record whose position no longer exists. Tidying, nothing more. */
+  private async forgetSolve(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.forgetSolve(puzzleId);
+    await this.buildDeck();
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  /** Re-read and repaint the dialog, if it is open. Cheap: no engine, one read. */
+  private async refreshDeckDialog(): Promise<void> {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
+    if (!dialog?.open || !this.profile) return;
+    const from = lookup(
+      [...this.derived.values()].flatMap(entry => entry.puzzles),
+      await this.profile.games(),
+    );
+    const [solves, hides] = await Promise.all([this.profile.solves(), this.profile.hidden()]);
+    if (!dialog.open) return;
+    const hiddenIds = new Set(hides.map(h => h.puzzleId));
+    this.deckRows = {
+      solved: reviewRows(solves, from, hiddenIds),
+      hidden: hiddenRows(hides, solves, from),
+    };
+    this.deckGames = from.games;
+    this.paintDeck();
   }
 
   /**
@@ -780,11 +882,18 @@ export class App {
   private async buildDeck(): Promise<void> {
     const profile = this.profile;
     if (!profile) return;
-    const [games, solves] = await Promise.all([profile.games(), profile.solves()]);
-    // Switch player is one click and two IndexedDB reads are not instant.
+    const [games, solves, hidden] = await Promise.all([
+      profile.games(),
+      profile.solves(),
+      profile.hidden(),
+    ]);
+    // Switch player is one click and three IndexedDB reads are not instant.
     if (this.profile !== profile) return;
     const deck = new Deck();
     deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
+    // After markSolved, so a position that is both stays counted as solved and
+    // leaves `pending` either way.
+    deck.markHidden(hidden.map(h => h.puzzleId));
     const maxPerGame = settings().maxPerGame;
     // Re-derived only where something moved. See `derivedKey`: the replay this
     // skips is ~18 µs a ply, which on a long analysed history is most of a

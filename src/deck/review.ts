@@ -20,16 +20,16 @@
 // Pure: no DOM, no engine, no storage. Runs under `node --test`.
 
 import type { ExportedGame } from '../lichess/export.ts';
-import type { SolveRecord } from '../storage/db.ts';
+import type { HideRecord, SolveRecord } from '../storage/db.ts';
 import type { Puzzle } from './build.ts';
 
 export interface ReviewRow {
   puzzleId: string;
-  /** When it was solved, from the solve record. */
+  /** When the record was written — solved, or put aside. */
   at: number;
-  /** 'win' found it, 'view' gave up and looked. */
-  result: 'win' | 'view';
-  attempts: number;
+  /** 'win' found it, 'view' gave up and looked. Absent on a hidden-but-unsolved one. */
+  result?: 'win' | 'view';
+  attempts?: number;
   /**
    * The position itself — absent when it can no longer be derived. That is not
    * corruption: a `solve:` record is keyed by `gameId:ply`, so lowering
@@ -44,30 +44,65 @@ export interface ReviewRow {
   game?: ExportedGame;
 }
 
-/** Newest solve first — the same order as the games and for the same reason. */
-export function reviewRows(
-  solves: readonly SolveRecord[],
-  puzzles: Iterable<Puzzle>,
-  games: readonly ExportedGame[],
-): ReviewRow[] {
+/** Everything the three lists are built from, indexed once. */
+export interface Lookup {
+  puzzles: Map<string, Puzzle>;
+  games: Map<string, ExportedGame>;
+}
+
+export function lookup(puzzles: Iterable<Puzzle>, games: readonly ExportedGame[]): Lookup {
   const byId = new Map<string, Puzzle>();
   for (const p of puzzles) byId.set(p.id, p);
   const byGame = new Map<string, ExportedGame>();
   for (const g of games) byGame.set(g.id, g);
-  return solves
-    .map(s => {
-      const puzzle = byId.get(s.puzzleId);
-      const game = puzzle ? byGame.get(puzzle.gameId) : undefined;
+  return { puzzles: byId, games: byGame };
+}
+
+const rowOf = (puzzleId: string, at: number, from: Lookup): ReviewRow => {
+  const puzzle = from.puzzles.get(puzzleId);
+  const game = puzzle ? from.games.get(puzzle.gameId) : undefined;
+  return { puzzleId, at, ...(puzzle ? { puzzle } : {}), ...(game ? { game } : {}) };
+};
+
+const newestFirst = (rows: ReviewRow[]): ReviewRow[] => rows.sort((a, b) => b.at - a.at);
+
+/**
+ * The solved list, newest first. Hidden ones are left out — putting a solved
+ * position aside is how you take it off this list, and having it in both would
+ * make "hide" look like it did nothing.
+ */
+export function reviewRows(
+  solves: readonly SolveRecord[],
+  from: Lookup,
+  hidden: ReadonlySet<string> = new Set(),
+): ReviewRow[] {
+  return newestFirst(
+    solves
+      .filter(s => !hidden.has(s.puzzleId))
+      .map(s => ({ ...rowOf(s.puzzleId, s.at, from), result: s.result, attempts: s.attempts })),
+  );
+}
+
+/**
+ * The put-aside list, most recently hidden first. A hidden position may also
+ * have been solved, in which case the row carries how that went — the two facts
+ * are independent and both are worth seeing here.
+ */
+export function hiddenRows(
+  hides: readonly HideRecord[],
+  solves: readonly SolveRecord[],
+  from: Lookup,
+): ReviewRow[] {
+  const bySolve = new Map(solves.map(s => [s.puzzleId, s]));
+  return newestFirst(
+    hides.map(h => {
+      const solved = bySolve.get(h.puzzleId);
       return {
-        puzzleId: s.puzzleId,
-        at: s.at,
-        result: s.result,
-        attempts: s.attempts,
-        ...(puzzle ? { puzzle } : {}),
-        ...(game ? { game } : {}),
+        ...rowOf(h.puzzleId, h.at, from),
+        ...(solved ? { result: solved.result, attempts: solved.attempts } : {}),
       };
-    })
-    .sort((a, b) => b.at - a.at);
+    }),
+  );
 }
 
 export interface WaitingSummary {

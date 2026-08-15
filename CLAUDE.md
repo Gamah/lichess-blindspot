@@ -592,19 +592,49 @@ half entirely, reasoning from the strong reading; that was wrong, and the
 argument against it is that a dozen boards side by side tell you no more than
 each one does alone, because there is nothing shared between them to read off.
 
-**The test for what an unsolved card may carry is "does the solving screen show
-this the moment the position is dealt".** That is the whole rule, and it admits
-more than it sounds like: the position, the king in check, the squares the
-opponent's move came from and went to (`puzzle.intro.uci`, the `lastMove`
-`Board.present` leaves behind), the **red arrow on the move played in the game**
-(the documented exception at the top of `ui/app.ts`), and those same facts in
-words — whose turn, what the opponent just played, whether you are in check.
-What it excludes is unchanged: the game, the opponent, the date, the move
-number, the evaluation, the swing. `miniBoard` takes a `MiniMarks` and the
-caption is `waitingText`; if either grows, apply that test rather than a
-judgment about spoilers.
+**The dialog is the one place an unsolved position is described, and that is
+deliberate.** The rule governs the *solving screen*, where the point is to meet
+a position cold. The dialog is the opposite activity: you opened it to look
+through what you have, and a list of positions you cannot tell apart is not
+something anyone can choose from. So a waiting card carries the same fields as
+a solved one — the move played, the move number, the swing, the judgment, the
+game and the opponent — **minus the engine's line**, which is the only thing
+that would make solving it pointless rather than merely informed. Nothing about
+the solving screen changed; it still hands positions over cold.
 
-Both halves page at `PAGE_SIZE` (12), independently, because each card is a
+The boards carry what the solving screen puts on a position when it is dealt:
+the check, the squares the opponent's move came from and went to
+(`puzzle.intro.uci`), and the red arrow on the move played (`MiniMarks`).
+
+**Hide, and no delete.** `hide:<puzzleId>` is a fourth key kind, and hiding is
+the only way a position stops coming round: a puzzle is derived from its game on
+every deck build, so there is nothing to delete short of the game. Deleting the
+*game* was built and then removed on purpose — it throws away the minutes of
+engine time that analysed it, and because `meta.until` has already paged past
+it and `meta.analysed` still names it, **the game is not re-fetched and the work
+is simply gone**. Hiding does everything wanting-it-gone needs, costs nothing
+and is reversible. Purge in Settings remains for reclaiming space, where losing
+the analysis is the point rather than a side effect. `Deck.markHidden` is the
+in-memory half, applied after `markSolved` so a position that is both stays
+counted as solved. `purgeGames`/`forgetGame` take `hide:` keys with them.
+
+A hidden position is left out of the Solved list — having it in both would make
+Hide look as though it had done nothing — and the Hidden section carries how the
+solve went, if it was ever solved, because those are independent facts.
+
+**`deckStats` is arithmetic over records the app already keeps.** No timing, no
+rating, no comparison with anyone: a solve is a result, a number of tries and a
+date, so that is all it can honestly report. The band breakdown uses lila's own
+`Advice.scala` thresholds (0.3 / 0.2 / 0.1 against the drop in winning chances),
+so "you find blunders and miss inaccuracies" is a statement about play rather
+than about this app. `now` is a parameter, not a call to the clock, so the
+streak is testable; the streak counts from today *or yesterday*, so it is not
+broken by the fact that it is nine in the morning.
+
+A record whose position can no longer be derived still counts in the totals — it
+happened — but is left out of every breakdown, which needs the position.
+
+All three sections page at `PAGE_SIZE` (12), independently, because each card is a
 chessground instance and a few hundred of them built on open is not a dialog
 that appears instantly. `clampPage` is applied on render rather than on the
 click, so a page held while a purge or a settings change shrank the list lands
@@ -627,8 +657,9 @@ Three things worth keeping:
 - **A solve record can outlive its position, and the row survives that.** A
   `solve:` key is `gameId:ply`, so lowering `maxPerGame` past a ply leaves a
   record with nothing to derive from. `ReviewRow.puzzle` is optional for exactly
-  that and the row still renders, saying why — quietly dropping someone's
-  history is worse. Purging no longer causes this; see below.
+  that and the row still renders, saying why, with a "forget this record" button
+  — quietly dropping someone's history is worse. Purging no longer causes this;
+  see below.
 
 `src/ui/format.ts` exists because of this dialog: `escape`, `showEval`,
 `gameUrl` and `moveNumber` were private to `app.ts` while the reveal was the

@@ -63,17 +63,24 @@ than underfunded. Settings has a "thinking time per position" dial anyway, if
 you want to spend more or, on a phone, less.
 
 **The deck can be looked through.** The *Deck* button opens every position you
-have, over the board rather than under it. Positions still waiting look
-exactly as they do when they are dealt — the position, the squares the
-opponent's move came from, and the red arrow on the move that lost it, with
-nothing about the game behind them — and "Solve this" jumps the queue. Solved ones come with
+have, over the board rather than under it. Positions still waiting are
+listed with everything except the engine's answer — the move you played, what
+it cost, which game it was — because a list you are choosing from has to be one
+you can tell apart. The solving screen still hands positions over cold. Solved ones come with
 everything: the move you played, what it cost, how the solve went, a link into
 the game, and a button that puts the position back on the board as a replay,
 which changes nothing that was recorded.
 
-Deleting games in Settings deletes their positions **and your record of having
-solved them** — a note about solving a position that no longer exists is not
-worth keeping.
+**Hide** takes a position out of the shuffle without deleting anything; Restore
+brings it back. There is no per-position delete, on purpose — the only thing
+that could be deleted is the whole game, and that throws away the engine time
+that analysed it for no space worth having. Settings still has a purge for when
+space really is the problem, and it now deletes the solve records of the games
+it drops.
+
+The dialog also totals your solves: how often you find the move without looking,
+and how that varies by side and by how bad the mistake was, using lichess' own
+inaccuracy/mistake/blunder thresholds.
 
 **This uses your processor, and it is meant to.** Blindspot is a chess engine
 running in a tab: every position is searched before you see it, so a long

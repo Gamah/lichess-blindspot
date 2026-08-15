@@ -8,6 +8,12 @@ export class Deck {
   private served: Puzzle | undefined;
   private readonly known = new Set<string>();
   private readonly solved = new Set<string>();
+  /**
+   * Positions put aside. Separate from `solved` because they are a different
+   * fact about a position and both counters are shown — and because restoring
+   * one must not make it look solved.
+   */
+  private readonly hidden = new Set<string>();
 
   private readonly rng: Rng;
 
@@ -17,7 +23,9 @@ export class Deck {
 
   /** Ignores puzzles it has already seen, so re-analysis can't duplicate them. */
   add(puzzles: readonly Puzzle[]): number {
-    const fresh = puzzles.filter(p => !this.known.has(p.id) && !this.solved.has(p.id));
+    const fresh = puzzles.filter(
+      p => !this.known.has(p.id) && !this.solved.has(p.id) && !this.hidden.has(p.id),
+    );
     for (const p of fresh) this.known.add(p.id);
     if (!fresh.length) return 0;
     // Reshuffle the whole remainder rather than appending: a batch tacked on
@@ -32,6 +40,19 @@ export class Deck {
       this.known.add(id);
     }
     this.pending = this.pending.filter(p => !this.solved.has(p.id));
+  }
+
+  /**
+   * Positions put aside — out of the shuffle, but not solved and not deleted.
+   * There is nothing to delete: a puzzle is derived from its game on every
+   * build, so the only way one stops coming round is a note saying so.
+   */
+  markHidden(ids: Iterable<string>): void {
+    for (const id of ids) {
+      this.hidden.add(id);
+      this.known.add(id);
+    }
+    this.pending = this.pending.filter(p => !this.hidden.has(p.id));
   }
 
   next(): Puzzle | undefined {
@@ -67,7 +88,12 @@ export class Deck {
    * one is on screen, and that copy would otherwise be skipped into a duplicate.
    */
   requeue(puzzle: Puzzle): void {
-    if (this.pending.some(p => p.id === puzzle.id) || this.solved.has(puzzle.id)) return;
+    if (
+      this.pending.some(p => p.id === puzzle.id) ||
+      this.solved.has(puzzle.id) ||
+      this.hidden.has(puzzle.id)
+    )
+      return;
     this.pending.push(puzzle);
   }
 
@@ -96,5 +122,9 @@ export class Deck {
 
   solvedCount(): number {
     return this.solved.size;
+  }
+
+  hiddenCount(): number {
+    return this.hidden.size;
   }
 }

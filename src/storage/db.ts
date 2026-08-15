@@ -8,6 +8,10 @@
 //               the expensive artefact and the only durable one.
 //   solve:<id>  what has been solved, keyed by `gameId:ply`, which is stable
 //               whatever a puzzle happens to contain this week.
+//   hide:<id>   positions put aside, same key. A position is derived from its
+//               game every time the deck is built, so there is nothing to
+//               delete — the only way to stop one coming round is to write
+//               down that it should not. Restoring is deleting that note.
 //
 // Plus `meta`, the paging cursor, and `schema`, the version stamp.
 //
@@ -16,12 +20,13 @@
 // "re-fetchable" and is never evicted automatically — deleting it deletes the
 // engine time that produced it, and the positions with it. See CLAUDE.md.
 
-import { clear, createStore, delMany, entries, get, set, type UseStore } from 'idb-keyval';
+import { clear, createStore, del, delMany, entries, get, set, type UseStore } from 'idb-keyval';
 
 import type { ExportedGame } from '../lichess/export.ts';
 
 const GAME = 'game:';
 const SOLVE = 'solve:';
+const HIDE = 'hide:';
 const META = 'meta';
 const SCHEMA = 'schema';
 
@@ -42,6 +47,11 @@ export interface SolveRecord {
   /** 'win' found it, 'view' gave up and looked. */
   result: 'win' | 'view';
   attempts: number;
+}
+
+export interface HideRecord {
+  puzzleId: string;
+  at: number;
 }
 
 export interface Meta {
@@ -164,6 +174,25 @@ export class Profile {
   recordSolve = (record: SolveRecord): Promise<void> =>
     this.use(store => set(SOLVE + record.puzzleId, record, store), undefined);
 
+  /**
+   * Positions put aside. Kept as their own records rather than as a flag on
+   * anything, because there is nothing durable to flag: a puzzle is derived
+   * from its game on every deck build, so "hidden" has to be a note *about* an
+   * id that outlives every derivation.
+   */
+  hidden = (): Promise<HideRecord[]> =>
+    this.use(store => valuesWithPrefix<HideRecord>(store, HIDE), []);
+
+  hide = (puzzleId: string, at: number): Promise<void> =>
+    this.use(store => set(HIDE + puzzleId, { puzzleId, at }, store), undefined);
+
+  restore = (puzzleId: string): Promise<void> =>
+    this.use(store => del(HIDE + puzzleId, store), undefined);
+
+  /** One solve record, for a card whose position no longer exists to show. */
+  forgetSolve = (puzzleId: string): Promise<void> =>
+    this.use(store => del(SOLVE + puzzleId, store), undefined);
+
   /** "Bring back solved": forget the history, keep the puzzles. */
   clearSolves = (): Promise<void> =>
     this.use(async store => {
@@ -194,16 +223,23 @@ export class Profile {
         .map(([k, v]) => [k as string, v as ExportedGame] as const)
         .sort((a, b) => (b[1].createdAt ?? 0) - (a[1].createdAt ?? 0));
       const drop = games.slice(keep);
-      const solves = solveKeysFor(all, new Set(drop.map(([, g]) => g.id)));
-      await delMany([...drop.map(([k]) => k), ...solves], store);
+      const ids = new Set(drop.map(([, g]) => g.id));
+      const solves = keysFor(all, SOLVE, ids);
+      const hides = keysFor(all, HIDE, ids);
+      await delMany([...drop.map(([k]) => k), ...solves, ...hides], store);
       return { games: drop.length, solves: solves.length };
     }, EMPTY_PURGE);
 
-  /** One game, and the record of solving anything in it. Same rule as a purge. */
+  /**
+   * One game, and every note about a position in it — solved, hidden, both.
+   * Same rule as a purge, and the only true delete there is: a position is
+   * derived from its game, so nothing short of dropping the game removes it.
+   */
   forgetGame = (id: string): Promise<void> =>
     this.use(async store => {
-      const solves = solveKeysFor(await entries<string, unknown>(store), new Set([id]));
-      await delMany([GAME + id, ...solves], store);
+      const all = await entries<string, unknown>(store);
+      const ids = new Set([id]);
+      await delMany([GAME + id, ...keysFor(all, SOLVE, ids), ...keysFor(all, HIDE, ids)], store);
     }, undefined);
 
   /** Everything for this username. Used by the settings panel, nothing else. */
@@ -218,18 +254,22 @@ export interface PurgeResult {
 const EMPTY_PURGE: PurgeResult = { games: 0, solves: 0 };
 
 /**
- * The `solve:` keys belonging to any of `gameIds`.
+ * The keys under `prefix` that belong to any of `gameIds`.
  *
- * A solve key is `solve:<gameId>:<ply>` — a puzzle id is `gameId:ply` — and a
+ * Both per-position prefixes key on a puzzle id, `<gameId>:<ply>`, and a
  * lichess game id carries no colon, so the last one separates the ply. Matched
- * that way rather than by `startsWith(SOLVE + id)`, which would also catch a
+ * that way rather than by `startsWith(prefix + id)`, which would also catch a
  * different game whose id merely began with this one's.
  */
-function solveKeysFor(all: readonly (readonly [IDBValidKey, unknown])[], gameIds: Set<string>): string[] {
+function keysFor(
+  all: readonly (readonly [IDBValidKey, unknown])[],
+  prefix: string,
+  gameIds: Set<string>,
+): string[] {
   return all
     .map(([k]) => k)
-    .filter(isPrefixed(SOLVE))
-    .filter(k => gameIds.has(k.slice(SOLVE.length, k.lastIndexOf(':'))));
+    .filter(isPrefixed(prefix))
+    .filter(k => gameIds.has(k.slice(prefix.length, k.lastIndexOf(':'))));
 }
 
 const isPrefixed =
