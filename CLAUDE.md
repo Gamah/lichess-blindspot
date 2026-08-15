@@ -209,10 +209,55 @@ Black, `prevEval` +1.33, `f5` played at +4.13):
 | a4 | -0.0752 **fail** | +0.1254 win |
 | c4 | -0.0853 **fail** | +0.1153 win |
 
-**The eval test is now the weak one, and that is deliberate.** In a badly lost
-position most legal moves beat the blunder, so it will pass nearly everything
-there. The top-5 / top-2 rank gate is what Medium and Hard actually rest on;
-Easy is meant to be forgiving and previously was not.
+**The eval test is now the weak one, and that is deliberate.** It asks only
+"did you beat what you played", so it passes a lot. The top-5 / top-2 rank gate
+is what Medium and Hard actually rest on; Easy is meant to be forgiving and
+previously was not.
+
+**How weak, measured — and it is not weak where you would guess.**
+`scripts/decided-band.ts` searches every legal move in a candidate's position
+(one wide-MultiPV search) and counts what share of them the eval test accepts.
+Over **1136 candidates from 240 real games at ~1100**, 2026-08-15:
+
+| `povChances` before the mistake | n | share of legal moves accepted |
+| --- | ---: | ---: |
+| -0.8 .. -0.7 | 22 | 38% |
+| -0.6 .. -0.5 | 43 | 44% |
+| -0.2 .. 0.2 | 422 | 34% |
+| 0.4 .. 0.6 | 128 | 29% |
+| 0.8 .. 1.0 | 84 | 34% |
+
+**Flat.** "A hopeless position accepts anything" is false, and it was PLAN row
+65 until this measured it. Two reasons, both worth keeping:
+
+- **A hopeless position is never a candidate.** `cpWinningChances` clamps at
+  ±1000cp and `mateWinningChances` bottoms out at -0.9987, while a candidate
+  needs a `povChances` swing over 0.2. So **no candidate can exist beyond
+  `|povChances(pov, prevEval)| > 0.7987`** — the clamp eats the swing before
+  the position gets that lost. A floor at 0.8 is a provable no-op. Observed
+  range over the corpus: -0.80 to +1.00.
+- **Most legal moves are terrible.** Beating a blunder still means beating it,
+  and roughly two thirds of the board fails to.
+
+Only **30 of the 1136** were free wins (>90% of legal moves accepted), and they
+sit at every `prevEval` from -0.68 to +1.00, so no floor finds them: one at 0.5
+deletes 30% of the deck to remove 13 of the 30.
+
+**The variable that does predict it is `after`, not `before`** — how bad the
+move played was, which is exactly what the test measures against:
+
+| `povChances` after the move played | n | accepted | >75% accepted |
+| --- | ---: | ---: | ---: |
+| -0.90 .. -0.80 | 62 | 57% | 31% |
+| -0.80 .. -0.60 | 237 | 42% | 18% |
+| -0.20 .. 0.20 | 287 | 23% | 2% |
+| 0.20 .. 0.60 | 76 | 19% | 4% |
+
+Monotone, and it turns back down below -0.95 because the alternatives clamp
+too. So the positions the eval test judges most loosely are the ones where the
+mistake was worst — which are the most instructive puzzles in the deck, and the
+last thing to withhold. If this is ever worth tightening, tighten
+`IMPROVE_DIFF` against the headroom the position has; do not filter the deck.
 
 ## Difficulty
 
