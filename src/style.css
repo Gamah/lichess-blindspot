@@ -511,3 +511,259 @@ button.danger:hover {
 .panel.about .steps h2 {
   margin: 0 0 0.35rem;
 }
+
+/* --- the deck dialog --- */
+
+/* Modal, over the board rather than under it: the deck is a grid of boards and
+   reading it must not push the one being solved off the screen. `<dialog>`
+   brings the backdrop, Escape and the focus trap; this is only the look. */
+.deck-dialog {
+  width: min(1100px, 94vw);
+  max-height: 88vh;
+  /* No padding at the top: the sticky head supplies it, so it can park at
+     `top: 0` and cover everything scrolling under it. */
+  padding: 0 1.25rem 1.5rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.deck-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+/* The head stays put while the list scrolls under it, which means it has to
+   cover what passes beneath: full bleed via the negative side margins, an
+   opaque background, and `top: 0` — at `-1rem` it parked above the scrollport
+   and left a strip of list showing over its own padding. */
+.deck-dialog .panel-head {
+  position: sticky;
+  top: 0;
+  margin: 0 -1.25rem 0.5rem;
+  padding: 1rem 1.25rem 0.6rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 2;
+}
+
+.deck-section {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 1.5rem 0 0.3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 1rem;
+}
+
+.deck-section .dim {
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+
+.deck-dialog .hint {
+  max-width: 46rem;
+}
+
+/* auto-fill rather than auto-fit: a single card should stay card-sized instead
+   of stretching to the full width of the dialog. */
+/* One column, always. A responsive grid put four boards across a desktop
+   window, which reads as a contact sheet rather than a list: the thumbnails
+   were too small to see a position in and the eye had nowhere to run down. So
+   the card turns on its side instead — a board at a readable fixed size, the
+   caption beside it, the button on the end. */
+.deck-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.6rem;
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+/* `position: relative; z-index: 0` is load-bearing: chessground gives every
+   piece `z-index: 2`, which otherwise competes with the sticky head at the root
+   and wins, so pieces paint over it as they scroll past. Making each card its
+   own stacking context caps its contents rather than racing their z-indexes. */
+.deck-card {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.2rem 1rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Fixed rather than a share of the row: a board has to be big enough to read a
+   position off, and no bigger — this is a list, not the board being played on. */
+.deck-card .mini {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 132px;
+  aspect-ratio: 1;
+}
+
+.deck-card-text {
+  grid-column: 2;
+  grid-row: 1;
+  line-height: 1.35;
+}
+
+.deck-card-meta {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.deck-card-text .dim,
+.deck-card-meta {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.deck-card-actions {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.deck-card-actions button {
+  white-space: nowrap;
+  width: 100%;
+}
+
+.deck-card-meta a {
+  color: inherit;
+}
+
+/* Narrow enough that a board, a sentence and a button will not sit in a row:
+   the button drops under the caption rather than squeezing either. */
+@media (width <= 560px) {
+  .deck-card {
+    grid-template-columns: auto 1fr;
+  }
+
+  .deck-card .mini {
+    width: 96px;
+  }
+
+  .deck-card-actions {
+    grid-column: 2;
+    grid-row: 3;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .deck-card-actions button {
+    width: auto;
+  }
+}
+
+/* Nothing to put in column one, so it is a single column of text. */
+.deck-card.gone {
+  grid-template-columns: 1fr;
+}
+
+.deck-card.gone .deck-card-text,
+.deck-card.gone .deck-card-meta {
+  grid-column: 1;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+
+/* --- the stats block --- */
+
+/* Figures first, because "how many and how often" is what someone opening this
+   wants; the bars underneath are the part worth reading slowly. */
+.stat-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem 1rem;
+  list-style: none;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0;
+}
+
+.stat-figures li {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-figures strong {
+  font-size: 1.5rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-figures .dim {
+  font-size: 0.8rem;
+}
+
+.stat-bars {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.stat-bars li {
+  display: grid;
+  grid-template-columns: 8rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.stat-label {
+  color: var(--dim);
+}
+
+/* The track is the total and the fill is the share found, so an empty-looking
+   bar is a real answer rather than missing data. */
+.stat-bar {
+  height: 0.5rem;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.stat-bar span {
+  display: block;
+  height: 100%;
+  background: var(--good);
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (width <= 560px) {
+  .stat-bars li {
+    grid-template-columns: 6rem 1fr auto;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+}
+
+/* The second row of controls under the board: putting a position aside is not
+   part of solving it, so it sits apart rather than beside Skip. */
+.controls.minor {
+  margin-top: -0.5rem;
+}

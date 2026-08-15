@@ -64,10 +64,11 @@ export const fineprint = (): string => `
 /**
  * The panel behind the About button.
  *
- * Same explanation as the landing page, plus the two things a person only
+ * Same explanation as the landing page, plus the three things a person only
  * meets *after* they start solving and so cannot have read on the way in: what
- * the numbered arrows mean when a position is revealed, and why the machine is
- * working. `battery` is the phone warning, already rendered, or empty.
+ * the numbered arrows mean when a position is revealed, what the Deck button
+ * does, and why the machine is working. `battery` is the phone warning, already
+ * rendered, or empty.
  */
 export const aboutPanel = (battery: string): string => `
   <div class="panel-head">
@@ -77,6 +78,15 @@ export const aboutPanel = (battery: string): string => `
   <p class="tagline">Your own blunders, with the game taken off them.</p>
   ${pitch()}
   ${steps()}
+
+  <h2>The hint</h2>
+  <p>Hint rings the pieces worth moving — <strong>up to five of them</strong>, because unlike a
+    lichess puzzle there is usually more than one move that saves the position. A ring means
+    moving that piece beats what was actually played; which of them is best, and where it goes,
+    is still yours to find. It never rings nothing, and it does not shrink on the harder
+    settings: what it shows is a fact about the position rather than about your difficulty.</p>
+  <p>Taking one is remembered, so the deck can tell you how often you found the move unaided.
+    Nothing else changes — a hinted solve still counts as solved.</p>
 
   <h2>The arrows on a solved position</h2>
   <p>When a position is done, the engine's five best moves from it go on the board, numbered
@@ -88,6 +98,26 @@ export const aboutPanel = (battery: string): string => `
   <p>The numbers are the ranking; the colour is only whether the move beats what was played.
     That is deliberate: the reveal looks the same on every difficulty, so a move does not
     change colour because of a setting.</p>
+
+  <h2>Looking through the deck</h2>
+  <p><strong>Deck</strong>, in the bar above, opens every position you have over the board you
+    are solving on. The ones still waiting are shown exactly as they arrive when they are
+    dealt — the position, the squares the opponent's move came from, and the red arrow on the
+    move that lost it — and nothing about the game behind them. "Solve this" jumps the queue
+    rather than waiting for the shuffle to reach it.</p>
+  <p>Solved positions are shown with everything: the move you played, what it cost, how the
+    solve went, and a link into the game on lichess. Any of them can be put back on the board.
+    That is a replay — it does not change what was recorded and the position does not rejoin
+    the shuffle. Settings can put them <em>all</em> back at once instead.</p>
+  <p><strong>Hide</strong> takes a position out of the shuffle without deleting anything — it
+    moves to a Hidden list and Restore brings it straight back. There is no delete, and that is
+    on purpose: the only thing that could be deleted is the whole game, which would throw away
+    the minutes of engine time spent analysing it for no space worth having. Settings has a
+    purge for when space is actually the problem.</p>
+  <p>The dialog also totals up your solves — how often you find the move without looking, how
+    that varies by which side you were playing and by how bad the mistake was. All of it is
+    arithmetic over what is already stored: a result, a number of tries and a date. Nothing
+    else is recorded and none of it leaves this browser.</p>
 
   <h2>Why this works the processor</h2>
   <p>Every position is searched before anyone is shown it — a quick pass over the whole game
@@ -104,7 +134,8 @@ export const aboutPanel = (battery: string): string => `
   <p>In this browser, under the username you typed, and nowhere else. A stored game carries
     the analysis of it, which is minutes of engine time that cannot be downloaded back, so
     nothing is ever deleted automatically — Settings has the buttons for when you want the
-    room back. Your solve history is tiny and survives either way.</p>
+    room back. Deleting games takes their positions and your record of having solved them with
+    them, since a record of solving something that no longer exists is not worth keeping.</p>
 
   ${fineprint()}
   <p class="line">Blindspot is free software, AGPL-3.0-or-later, and ports parts of

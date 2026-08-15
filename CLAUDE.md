@@ -410,6 +410,38 @@ the copy in Settings and on the notice says it in those words — keep it that
 way, and do not let the copy claim a fixed *depth*: the limit is time, which is
 device-dependent, and that is written down a few paragraphs up.
 
+## The hint
+
+Lichess' puzzle hint rings the piece to move. Here there is usually more than
+one right answer, so it rings **up to five pieces**: `hintSquares`
+(`src/solve/retro.ts`) takes the origin square of every ranked line the eval
+test accepts, best first, deduplicated — two of the five lines are often the
+same piece going to different places, and a hint counts pieces.
+
+- **The eval test alone, not the difficulty gate.** The same decision as
+  `altVerdicts` and for the same reason: a hint is then a property of the
+  position and says the same thing on Easy as on Hard, rather than shrinking as
+  a setting is raised. A ring means "moving this improves on what was played";
+  Medium and Hard may still ask that the move be one the engine ranks highly,
+  which is what those settings *are*.
+- **Never empty.** If no ranked line passes the eval test, `classify` still
+  accepts `best` outright, so that piece is the hint. A hint that rings nothing
+  would be a lie about a position that has an answer.
+- It rings four of five pieces on a position where four lines are sound, and
+  that is the honest answer rather than a reason to show fewer.
+- `Board.hint` holds the squares the way `Board.mark` holds the red arrow, and
+  for the same reason: every `set` clears the shapes and a wrong answer re-sets
+  the position, so a hint drawn once would vanish on the first miss after it was
+  asked for. Both go through `applyMarks` as **auto**-shapes, so pressing the
+  board does not wipe them.
+
+**Asking for one is recorded.** `SolveRecord.hinted` is optional and absent on
+every record written before the button existed, which reads as false and is what
+it was — no schema bump, and the figures start at zero for a returning player
+rather than being wrong. The stats split "found" into `unaided` (no hint, no
+solution) and `hinted`, because "found it" and "found it after being shown which
+piece" are different results and one figure covering both would flatter.
+
 ## The settings, and what each one is allowed to touch
 
 Four dials, and the boundaries between them are the design:
@@ -566,23 +598,118 @@ which the landing page and the About panel both assemble. Two copies of an
 explanation drift, and the one behind a button is the one nobody would notice
 going stale.
 
-About carries two things the landing page cannot, because they are only met
-*after* solving starts: what the numbered arrows mean, and why the machine is
-working. `#panel` is one element in two modes (`App.panel` says which), so
-opening one closes the other; `panel.about` is the class that gives prose a
-measure. Nothing in `about.ts` interpolates anything a person typed, and so
-nothing in it escapes anything — keep it that way.
+About carries three things the landing page cannot, because they are only met
+*after* solving starts: what the numbered arrows mean, what Deck does, and why
+the machine is working. `#panel` is one element in **three** modes (`App.panel`
+says which, `PanelKind`), so opening one closes the others; `panel.about` is the
+class that gives prose a measure. Nothing in `about.ts` interpolates anything a
+person typed, and so nothing in it escapes anything — keep it that way.
 
-**How an existing user is told a setting exists.** The same shape as the schema
-reset, and the only other thing in the app that gates the front door:
-`Settings.difficulty` is **absent** until chosen, and `App.begin` asks
-`profile.hasGames()`. Games present and no choice recorded means someone who
-has been solving under the old rule, and they get `renderDifficultyNotice`
-once — which is also where the catch-up ranking pass is explained, since that
-is the visible cost of the change. An *empty* store is a first visit — nothing
-to be surprised by — so the default is written silently and the notice never
-appears. Without that stamp a new player would meet the notice on their second
-visit, announcing a change that never happened to them.
+## The deck, looked at rather than dealt from
+
+The **Deck** dialog shows every position in the deck as a board. `#panel` stays
+two modes; the deck is a `<dialog>` opened with `showModal()`, and that is not
+decoration — it is a grid that runs to hundreds of cards, and reading it must
+not push the board being solved off the screen. Native modal also brings the
+backdrop, Escape, the focus trap and inerting the page behind it, none of which
+a hand-rolled overlay gets right for free.
+
+**The rule at the top of `ui/app.ts` forbids less than it first appears, and
+this is where the distinction gets made.** It is about **where a position came
+from** — the game, the opponent, the date, the move number, the evaluation —
+not about the position itself, which is handed over in full the moment the
+puzzle is dealt. So *both* halves of the deck are shown as boards, and they
+differ only in what goes around them. An earlier version withheld the unsolved
+half entirely, reasoning from the strong reading; that was wrong, and the
+argument against it is that a dozen boards side by side tell you no more than
+each one does alone, because there is nothing shared between them to read off.
+
+**The dialog is the one place an unsolved position is described, and that is
+deliberate.** The rule governs the *solving screen*, where the point is to meet
+a position cold. The dialog is the opposite activity: you opened it to look
+through what you have, and a list of positions you cannot tell apart is not
+something anyone can choose from. So a waiting card carries the same fields as
+a solved one — the move played, the move number, the swing, the judgment, the
+game and the opponent — **minus the engine's line**, which is the only thing
+that would make solving it pointless rather than merely informed. Nothing about
+the solving screen changed; it still hands positions over cold.
+
+The boards carry what the solving screen puts on a position when it is dealt:
+the check, the squares the opponent's move came from and went to
+(`puzzle.intro.uci`), and the red arrow on the move played (`MiniMarks`).
+
+**Hide, and no delete.** `hide:<puzzleId>` is a fourth key kind, and hiding is
+the only way a position stops coming round: a puzzle is derived from its game on
+every deck build, so there is nothing to delete short of the game. Deleting the
+*game* was built and then removed on purpose — it throws away the minutes of
+engine time that analysed it, and because `meta.until` has already paged past
+it and `meta.analysed` still names it, **the game is not re-fetched and the work
+is simply gone**. Hiding does everything wanting-it-gone needs, costs nothing
+and is reversible. Purge in Settings remains for reclaiming space, where losing
+the analysis is the point rather than a side effect. `Deck.markHidden` is the
+in-memory half, applied after `markSolved` so a position that is both stays
+counted as solved. `purgeGames`/`forgetGame` take `hide:` keys with them.
+
+A hidden position is left out of the Solved list — having it in both would make
+Hide look as though it had done nothing — and the Hidden section carries how the
+solve went, if it was ever solved, because those are independent facts.
+
+**`deckStats` is arithmetic over records the app already keeps.** No timing, no
+rating, no comparison with anyone: a solve is a result, a number of tries and a
+date, so that is all it can honestly report. The band breakdown uses lila's own
+`Advice.scala` thresholds (0.3 / 0.2 / 0.1 against the drop in winning chances),
+so "you find blunders and miss inaccuracies" is a statement about play rather
+than about this app. `now` is a parameter, not a call to the clock, so the
+streak is testable; the streak counts from today *or yesterday*, so it is not
+broken by the fact that it is nine in the morning.
+
+A record whose position can no longer be derived still counts in the totals — it
+happened — but is left out of every breakdown, which needs the position.
+
+All three sections page at `PAGE_SIZE` (12), independently, because each card is a
+chessground instance and a few hundred of them built on open is not a dialog
+that appears instantly. `clampPage` is applied on render rather than on the
+click, so a page held while a purge or a settings change shrank the list lands
+on the last page instead of on nothing. The rows are read once per open and held
+in `App.deckRows`, dropped on `close` so the next open is fresh.
+
+Three things worth keeping:
+
+- **A replay is not a solve.** `App.replaying` is set by `App.fromDeck` and
+  cleared by `nextPuzzle`; `finish` skips `recordSolve` while it is set. Without
+  that, going back over a position you found first time and then pressing Show
+  solution would overwrite the record with "looked at the answer", which is a
+  worse account of what happened than none. The position is already out of the
+  shuffle, so the write would buy nothing either. Dealing a *waiting* position
+  out of turn is the other door through `fromDeck` and is an ordinary solve:
+  `Deck.take` lifts it out of `pending` exactly as `next()` would have.
+- **`App.present` is the shared half of `nextPuzzle` and `fromDeck`.** They
+  differ only in what the deck did first and whether the result is written down,
+  never in what is shown.
+- **A solve record can outlive its position, and the row survives that.** A
+  `solve:` key is `gameId:ply`, so lowering `maxPerGame` past a ply leaves a
+  record with nothing to derive from. `ReviewRow.puzzle` is optional for exactly
+  that and the row still renders, saying why, with a "forget this record" button
+  — quietly dropping someone's history is worse. Purging no longer causes this;
+  see below.
+
+`src/ui/format.ts` exists because of this dialog: `escape`, `showEval`,
+`gameUrl` and `moveNumber` were private to `app.ts` while the reveal was the
+only screen allowed to know a position's origin. There are two now.
+
+**Purging games takes their solve records with them.** `purgeGames` deletes the
+`solve:<gameId>:` keys of every game it drops and returns `{games, solves}`;
+`forgetGame` does the same for one. It did not, on the grounds that a record is
+tiny and `gameId:ply` is what a position *is* — but deleting a game deletes the
+position, so what survived was a record of solving something that no longer
+exists: unshowable in the deck dialog, unreplayable, and silently inflating
+"bring back solved" with positions that can never come back. Purging is asked
+for in order to be rid of something. The copy in Settings, About and
+`storagePressure()` says so; it used to promise the opposite ("your solve
+history survives either way"), so do not reintroduce that sentence.
+
+A schema reset still takes everything (see `Profile.reset`), and that is
+unchanged and unrelated.
 
 ## Browsers that refuse storage
 

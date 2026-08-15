@@ -18,7 +18,14 @@ import { derivedKey, puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import { altVerdicts, DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
+import {
+  altVerdicts,
+  DIFFICULTIES,
+  hintSquares,
+  Solve,
+  TOP_LINES,
+  type Difficulty,
+} from '../solve/retro.ts';
 import {
   mb,
   Profile,
@@ -39,8 +46,12 @@ import {
   settings,
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
+import { hiddenRows, lookup, reviewRows, waitingSummary, type ReviewRow } from '../deck/review.ts';
+import { deckStats } from '../deck/stats.ts';
 import { aboutPanel, fineprint, pitch, steps } from './about.ts';
-import { Board, type PlayedMove } from './board.ts';
+import { escape, gameUrl, moveNumber, showEval } from './format.ts';
+import { deckPanel, NO_PAGES, type DeckPages } from './review.ts';
+import { Board, miniBoard, type PlayedMove } from './board.ts';
 import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
 /** Fetch more when the deck gets this thin. */
@@ -54,6 +65,9 @@ const JUDGE_MOVETIME = 1000;
  */
 const BUSY_WAIT = 60_000;
 
+/** The inline panel under the board has two tenants; `App.panel` says which. */
+type PanelKind = 'settings' | 'about';
+
 export class App {
   private profile: Profile | undefined;
   private pipeline: Pipeline | undefined;
@@ -65,8 +79,23 @@ export class App {
    */
   private derived = new Map<string, { key: string; puzzles: Puzzle[] }>();
   private board: Board | undefined;
-  /** Which of the two things the one panel is currently showing, if it is open. */
-  private panel: 'settings' | 'about' | undefined;
+  /** Which of the two things the inline panel is currently showing, if it is open. */
+  private panel: PanelKind | undefined;
+  /**
+   * The position on the board is a replay of one already solved, picked out of
+   * the deck panel. It must not be recorded again: a replay that went badly
+   * would otherwise overwrite "found it, first try" with "looked at the
+   * answer", which is a worse record of what happened than no record.
+   */
+  private replaying = false;
+  /**
+   * The deck dialog's rows, held only while it is open — closing it drops them
+   * so the next open reads fresh records rather than showing a stale list.
+   */
+  private deckRows: { solved: readonly ReviewRow[]; hidden: readonly ReviewRow[] } | undefined;
+  private deckPages: DeckPages = NO_PAGES;
+  /** Games indexed for the dialog, alongside `deckRows` and dropped with them. */
+  private deckGames: ReadonlyMap<string, ExportedGame> = new Map();
   /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
   private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
@@ -197,6 +226,7 @@ export class App {
       <header class="topbar">
         <span class="who">${escape(this.profile?.username ?? '')}</span>
         <span class="spacer"></span>
+        <button id="deck-open" class="quiet">Deck</button>
         <button id="about" class="quiet">About</button>
         <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
@@ -209,28 +239,47 @@ export class App {
           <div class="feedback" id="feedback"></div>
           <div class="reveal" id="reveal"></div>
           <div class="controls">
+            <button id="hint" class="quiet">Hint</button>
             <button id="solution">Show solution</button>
             <button id="skip">Skip</button>
             <button id="next" hidden>Next position</button>
+          </div>
+          <!-- Putting a position aside belongs here as much as in the deck
+               dialog: the moment you want it gone is usually the moment you
+               are looking at it. -->
+          <div class="controls minor">
+            <button id="hide" class="quiet">Hide this position</button>
           </div>
           <div class="counters" id="counters"></div>
         </aside>
       </main>
       <div class="panel" id="panel" hidden></div>
+      <dialog class="deck-dialog" id="deck-dialog"></dialog>
       ${footer()}`;
     this.panel = undefined;
     this.paintStorageNote();
     this.board = new Board(this.root.querySelector('#board') as HTMLElement, m => void this.onMove(m));
+    (this.root.querySelector('#hint') as HTMLButtonElement).onclick = () => this.showHint();
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
+    (this.root.querySelector('#hide') as HTMLButtonElement).onclick = () => {
+      const id = this.solve?.puzzle.id;
+      if (id) void this.hidePuzzle(id);
+    };
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
     (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.togglePanel('settings');
     (this.root.querySelector('#about') as HTMLButtonElement).onclick = () => void this.togglePanel('about');
+    (this.root.querySelector('#deck-open') as HTMLButtonElement).onclick = () => void this.openDeck();
+    // Escape and the backdrop are the dialog's own; this is the only state we keep.
+    (this.root.querySelector('#deck-dialog') as HTMLDialogElement).onclose = () => {
+      this.deckRows = undefined;
+    };
   }
 
   /**
-   * The one panel, in one of two modes.
+   * The inline panel, in one of two modes. The deck is not one of them — it is
+   * a modal dialog, for the reason written at the top of `review.ts`.
    *
    * About is here because there is otherwise **no way back to the explanation**
    * once a username has been typed: the landing page is reachable only through
@@ -238,29 +287,209 @@ export class App {
    * arrives with a name already remembered never sees it at all. Its copy is
    * shared with the landing page rather than written twice — see `about.ts`.
    */
-  private async togglePanel(kind: 'settings' | 'about'): Promise<void> {
+  private async togglePanel(kind: PanelKind): Promise<void> {
     const panel = this.root.querySelector('#panel') as HTMLElement | null;
     if (!panel || !this.profile) return;
     // The button that opened it also closes it; the other button switches.
-    if (!panel.hidden && this.panel === kind) {
-      panel.hidden = true;
-      this.panel = undefined;
-      return;
-    }
+    if (!panel.hidden && this.panel === kind) return this.closePanel();
     this.panel = kind;
     panel.hidden = false;
     // Prose wants a narrower measure than a settings grid does.
     panel.className = kind === 'about' ? 'panel about' : 'panel';
     if (kind === 'about') {
       panel.innerHTML = aboutPanel(batteryWarning());
-      (panel.querySelector('#close') as HTMLButtonElement).onclick = () => {
-        panel.hidden = true;
-        this.panel = undefined;
-      };
+      this.wireClose(panel);
       panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
       return;
     }
     await this.renderSettings(panel);
+  }
+
+  private closePanel(): void {
+    const panel = this.root.querySelector('#panel') as HTMLElement | null;
+    if (panel) panel.hidden = true;
+    this.panel = undefined;
+  }
+
+  private wireClose(panel: HTMLElement): void {
+    (panel.querySelector('#close') as HTMLButtonElement).onclick = () => this.closePanel();
+  }
+
+  /**
+   * The deck, looked at rather than dealt from — a modal dialog rather than the
+   * inline panel, because it is a grid of boards that can run to hundreds and
+   * reading it must not scroll the board being solved off the screen.
+   *
+   * Everything shown comes out of what is already in memory (the derivation
+   * cache) plus one read of the solve records, so opening it costs no engine
+   * time. The rows are then held for as long as the dialog is open: turning a
+   * page re-renders a dozen cards and touches storage again for nothing.
+   */
+  private async openDeck(): Promise<void> {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
+    const profile = this.profile;
+    if (!dialog || !profile) return;
+    this.deckPages = NO_PAGES;
+    dialog.innerHTML = '<p class="hint">Reading your deck…</p>';
+    dialog.showModal();
+    const [solves, games, hides] = await Promise.all([
+      profile.solves(),
+      profile.games(),
+      profile.hidden(),
+    ]);
+    // Switch player is one click, and three reads are not instant.
+    if (this.profile !== profile || !dialog.open) return;
+    const from = lookup(
+      [...this.derived.values()].flatMap(entry => entry.puzzles),
+      games,
+    );
+    const hiddenIds = new Set(hides.map(h => h.puzzleId));
+    this.deckRows = {
+      solved: reviewRows(solves, from, hiddenIds),
+      hidden: hiddenRows(hides, solves, from),
+    };
+    this.deckGames = from.games;
+    this.paintDeck();
+  }
+
+  /**
+   * Render the dialog from what is held. Called on open and on every page turn,
+   * which is why it mounts its own boards: `innerHTML` throws the previous
+   * page's chessground instances away with the markup, and they hold no state
+   * worth keeping — `miniBoard` is view-only and has no listeners of its own.
+   */
+  private paintDeck(): void {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
+    const rows = this.deckRows;
+    if (!dialog?.open || !rows) return;
+    const waiting = this.deck.waiting();
+    dialog.innerHTML = deckPanel({
+      summary: waitingSummary(waiting),
+      waiting,
+      games: this.deckGames,
+      solved: rows.solved,
+      hidden: rows.hidden,
+      stats: deckStats(rows.solved, { waiting: waiting.length, hidden: rows.hidden.length }, Date.now()),
+      pages: this.deckPages,
+    });
+    (dialog.querySelector('#close') as HTMLButtonElement).onclick = () => dialog.close();
+    for (const el of dialog.querySelectorAll<HTMLElement>('.mini[data-fen]'))
+      miniBoard(el, el.dataset.fen!, el.dataset.pov === 'black' ? 'black' : 'white', {
+        ...(el.dataset.played ? { played: el.dataset.played } : {}),
+        ...(el.dataset.last ? { last: el.dataset.last } : {}),
+      });
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-review]'))
+      button.onclick = () => void this.fromDeck(button.dataset.review!, true);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-serve]'))
+      button.onclick = () => void this.fromDeck(button.dataset.serve!, false);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-hide]'))
+      button.onclick = () => void this.hidePuzzle(button.dataset.hide!);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-restore]'))
+      button.onclick = () => void this.restorePuzzle(button.dataset.restore!);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-forget]'))
+      button.onclick = () => void this.forgetSolve(button.dataset.forget!);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-page]')) {
+      const [half, page] = button.dataset.page!.split(':') as ['waiting' | 'solved', string];
+      button.onclick = () => {
+        this.deckPages = { ...this.deckPages, [half]: Number(page) };
+        this.paintDeck();
+        dialog.scrollTop = 0;
+      };
+    }
+  }
+
+  // --- putting positions aside, and deleting games -------------------------
+
+  /**
+   * Out of the shuffle, kept, reversible. There is nothing to delete: a puzzle
+   * is derived from its game on every deck build, so the only way one stops
+   * coming round is a note saying so — which is what `hide:` is.
+   *
+   * Works on a solved position too, where it means "take this off the solved
+   * list"; the two facts are independent and the Hidden section shows both.
+   */
+  private async hidePuzzle(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.hide(puzzleId, Date.now());
+    this.deck.markHidden([puzzleId]);
+    // Hiding what is on the board deals the next one, or the position stays up
+    // with nothing behind it.
+    if (this.solve?.puzzle.id === puzzleId) {
+      (this.root.querySelector('#deck-dialog') as HTMLDialogElement | null)?.close();
+      await this.nextPuzzle();
+    }
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  private async restorePuzzle(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.restore(puzzleId);
+    // `Deck` has no un-hide: the set is rebuilt from storage every time, so a
+    // full rebuild is both the simplest correct answer and the cheap one, since
+    // `derivedKey` means nothing is re-derived.
+    await this.buildDeck();
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  /** A solve record whose position no longer exists. Tidying, nothing more. */
+  private async forgetSolve(puzzleId: string): Promise<void> {
+    if (!this.profile) return;
+    await this.profile.forgetSolve(puzzleId);
+    await this.buildDeck();
+    await this.refreshDeckDialog();
+    this.renderCounters();
+  }
+
+  /** Re-read and repaint the dialog, if it is open. Cheap: no engine, one read. */
+  private async refreshDeckDialog(): Promise<void> {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
+    if (!dialog?.open || !this.profile) return;
+    const from = lookup(
+      [...this.derived.values()].flatMap(entry => entry.puzzles),
+      await this.profile.games(),
+    );
+    const [solves, hides] = await Promise.all([this.profile.solves(), this.profile.hidden()]);
+    if (!dialog.open) return;
+    const hiddenIds = new Set(hides.map(h => h.puzzleId));
+    this.deckRows = {
+      solved: reviewRows(solves, from, hiddenIds),
+      hidden: hiddenRows(hides, solves, from),
+    };
+    this.deckGames = from.games;
+    this.paintDeck();
+  }
+
+  /**
+   * Put a position from the dialog on the board. Two doors into one thing:
+   *
+   * - **replay** a solved one. It stays solved — the deck already counts it
+   *   that way, `serve` only makes it the thing on screen — and `finish` writes
+   *   nothing while `replaying` is set, so a replay cannot overwrite the record
+   *   of how it went the first time.
+   * - **deal** a waiting one out of turn. `take` lifts it out of `pending`
+   *   exactly as `next()` would have when its turn came, so it is an ordinary
+   *   solve and is recorded like one.
+   *
+   * Whatever was on the board goes back in the queue, unsolved, exactly as Skip
+   * leaves it. `requeue` ignores a puzzle that is already solved, so a run of
+   * replays cannot pile them into `pending`.
+   */
+  private async fromDeck(puzzleId: string, replaying: boolean): Promise<void> {
+    const puzzle = replaying
+      ? [...this.derived.values()].flatMap(entry => entry.puzzles).find(p => p.id === puzzleId)
+      : this.deck.waiting().find(p => p.id === puzzleId);
+    if (!puzzle) return;
+    const current = this.deck.current();
+    if (current && current.id !== puzzleId) this.deck.requeue(current);
+    (this.root.querySelector('#deck-dialog') as HTMLDialogElement | null)?.close();
+    this.awaitingPuzzles = false;
+    clearTimeout(this.exhaustedTimer);
+    if (replaying) this.deck.serve(puzzle);
+    else if (!this.deck.take(puzzleId)) return;
+    this.replaying = replaying;
+    await this.present(puzzle);
   }
 
   /** Back to the landing screen, with the background work stopped. */
@@ -275,6 +504,8 @@ export class App {
     // sides — so it belongs to the profile, not to the app.
     this.derived = new Map();
     this.solve = undefined;
+    this.replaying = false;
+    this.deckRows = undefined;
     this.board = undefined;
     this.progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
     this.unlocked = false;
@@ -361,15 +592,19 @@ export class App {
             ? `Using ${mb(estimate.usage)} of ${mb(estimate.quota)} available. `
             : 'This browser will not say how much space it is using. '
         }A stored game carries the analysis of it, and the positions you solve are built from
-          that, so deleting games deletes their positions too. Nothing is ever discarded on its
-          own; your solve history survives either way.</p>
+          that, so deleting games deletes their positions — <strong>and the record of having
+          solved them</strong>, which would otherwise be a note about a position that no longer
+          exists. Nothing is ever discarded on its own initiative; this button is the only thing
+          that deletes games.</p>
       </div>
 
       <div class="setting">
         <span class="label-text">Solved positions</span>
         <button id="unsolve" class="quiet">Bring back ${solved}</button>
-        <p class="hint">Solved positions leave the shuffle but stay stored. This puts them back
-          in, which is a way to revisit them without re-analysing anything.</p>
+        <p class="hint">Solved positions leave the shuffle but stay stored. This puts them all
+          back in, and re-solving them is recorded as solving them. To go back over one without
+          disturbing any of that, use Deck in the bar above — it lists them and will put a
+          single position back on the board as a replay.</p>
       </div>
 
       <div class="setting">
@@ -453,12 +688,13 @@ export class App {
       status(`Using ${using} core${using === 1 ? '' : 's'}.`);
     };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
-      const dropped = await this.profile?.purgeGames();
+      const dropped = (await this.profile?.purgeGames()) ?? { games: 0, solves: 0 };
       this.pipeline?.recheckFull();
       await this.buildDeck();
       this.renderCounters();
       status(
-        `${dropped ?? 0} game${dropped === 1 ? '' : 's'} deleted, and the positions from them. ` +
+        `${dropped.games} game${dropped.games === 1 ? '' : 's'} deleted, the positions from them, ` +
+          `and ${dropped.solves} solved record${dropped.solves === 1 ? '' : 's'}. ` +
           `${this.deck.unsolvedCount()} waiting.`,
       );
     };
@@ -655,11 +891,18 @@ export class App {
   private async buildDeck(): Promise<void> {
     const profile = this.profile;
     if (!profile) return;
-    const [games, solves] = await Promise.all([profile.games(), profile.solves()]);
-    // Switch player is one click and two IndexedDB reads are not instant.
+    const [games, solves, hidden] = await Promise.all([
+      profile.games(),
+      profile.solves(),
+      profile.hidden(),
+    ]);
+    // Switch player is one click and three IndexedDB reads are not instant.
     if (this.profile !== profile) return;
     const deck = new Deck();
     deck.markSolved(solves.map((s: SolveRecord) => s.puzzleId));
+    // After markSolved, so a position that is both stays counted as solved and
+    // leaves `pending` either way.
+    deck.markHidden(hidden.map(h => h.puzzleId));
     const maxPerGame = settings().maxPerGame;
     // Re-derived only where something moved. See `derivedKey`: the replay this
     // skips is ~18 µs a ply, which on a long analysed history is most of a
@@ -717,10 +960,22 @@ export class App {
       void this.refill();
       return;
     }
+    this.replaying = false;
+    await this.present(puzzle);
+  }
+
+  /**
+   * Put a position on the board and start a solve on it. Shared by dealing the
+   * next one and by replaying a solved one out of the deck panel — the two
+   * differ only in what the deck did beforehand and in whether the result is
+   * written down, never in what is shown.
+   */
+  private async present(puzzle: Puzzle): Promise<void> {
     this.solve = new Solve(puzzle);
     this.attempts = 0;
     this.setReveal('');
     this.toggleNext(false);
+    (this.root.querySelector('#hint') as HTMLButtonElement | null)?.removeAttribute('disabled');
     this.renderCounters();
 
     const them = puzzle.pov === 'white' ? 'Black' : 'White';
@@ -818,16 +1073,49 @@ export class App {
       result === 'win' ? solve.lastAttempt?.uci : undefined,
     );
     this.deck.markSolved([solve.puzzle.id]);
-    await this.profile.recordSolve({
-      puzzleId: solve.puzzle.id,
-      at: Date.now(),
-      result,
-      attempts: this.attempts,
-    });
+    // A replay is not a solve. Recording it would overwrite what actually
+    // happened the first time — "found it, first try" becoming "looked at the
+    // answer" is a worse record than none — and the position is already out of
+    // the shuffle, so there is nothing else the write would achieve.
+    if (!this.replaying)
+      await this.profile.recordSolve({
+        puzzleId: solve.puzzle.id,
+        at: Date.now(),
+        result,
+        attempts: this.attempts,
+        ...(solve.hinted ? { hinted: true } : {}),
+      });
     await this.renderReveal(solve.puzzle);
     this.toggleNext(true);
     this.renderCounters();
     if (this.deck.unsolvedCount() < REFILL_AT) void this.refill();
+  }
+
+  /**
+   * Ring the pieces worth moving — lichess' puzzle hint, except that there is
+   * more than one right answer here, so there can be more than one piece.
+   *
+   * Up to five, one per ranked line the eval test accepts, deduplicated by
+   * square. It does not name a move and it does not narrow with difficulty (see
+   * `hintSquares`); it says "one of these is the piece", which on a position
+   * where four of the five lines are sound is genuinely most of the board's
+   * pieces — and that is the honest answer, not a reason to show fewer.
+   */
+  private showHint(): void {
+    const solve = this.solve;
+    if (!solve || !solve.isSolving()) return;
+    const squares = hintSquares(solve.puzzle);
+    solve.hinted = true;
+    this.board?.hint(squares);
+    (this.root.querySelector('#hint') as HTMLButtonElement | null)?.setAttribute('disabled', '');
+    this.setFeedback(
+      squares.length === 1
+        ? `<strong>One piece to move.</strong> <span>The ring is on it — the move is still yours
+             to find.</span>`
+        : `<strong>${squares.length} pieces would improve the position.</strong> <span>Moving any
+             of the ringed pieces can beat what was played; finding the best of them is the
+             rest of the job.</span>`,
+    );
   }
 
   private async showSolution(): Promise<void> {
@@ -887,7 +1175,7 @@ export class App {
 
   private async renderReveal(puzzle: Puzzle): Promise<void> {
     const game = await this.profile?.game(puzzle.gameId);
-    const move = Math.ceil(puzzle.ply / 2);
+    const move = moveNumber(puzzle.ply);
     this.setReveal(`
       <h2>${escape(puzzle.played.san)} was played</h2>
       <p class="line"><span class="label">Engine</span> ${escape(puzzle.pv.slice(0, 6).join(' '))}</p>
@@ -981,9 +1269,11 @@ export class App {
     const next = this.root.querySelector('#next') as HTMLButtonElement | null;
     const solution = this.root.querySelector('#solution') as HTMLButtonElement | null;
     const skip = this.root.querySelector('#skip') as HTMLButtonElement | null;
+    const hint = this.root.querySelector('#hint') as HTMLButtonElement | null;
     if (next) next.hidden = !show;
     if (solution) solution.hidden = show;
     if (skip) skip.hidden = show;
+    if (hint) hint.hidden = show;
   }
 
   private renderCounters(): void {
@@ -1001,9 +1291,6 @@ export class App {
 }
 
 // --- formatting -------------------------------------------------------------
-
-const escape = (s: string): string =>
-  s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 const DIFFICULTY_NAMES: Record<Difficulty, string> = {
   easy: 'Easy',
@@ -1105,18 +1392,6 @@ function threadOptions(): string {
     ),
   ].join('');
 }
-
-const showEval = (e: { cp?: number; mate?: number }): string =>
-  e.mate !== undefined ? `#${e.mate}` : `${e.cp! > 0 ? '+' : ''}${(e.cp! / 100).toFixed(1)}`;
-
-/**
- * `puzzle.ply` is the ply of the *mistake*, and lichess' `#n` fragment selects
- * the position **after** ply n — so linking it lands one move past the puzzle,
- * with the blunder already on the board. `ply - 1` opens the position that was
- * handed out, and stepping forward once is then the reveal.
- */
-const gameUrl = (id: string, puzzle: Puzzle): string =>
-  `https://lichess.org/${escape(id)}/${puzzle.pov}#${Math.max(0, puzzle.ply - 1)}`;
 
 function gameLine(game: ExportedGame, puzzle: Puzzle, move: number): string {
   const them = puzzle.pov === 'white' ? game.players.black : game.players.white;

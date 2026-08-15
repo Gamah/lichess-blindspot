@@ -62,6 +62,32 @@ measured no better, because the tail of that list is genuinely uncertain rather
 than underfunded. Settings has a "thinking time per position" dial anyway, if
 you want to spend more or, on a phone, less.
 
+**The deck can be looked through.** The *Deck* button opens every position you
+have, over the board rather than under it. Positions still waiting are
+listed with everything except the engine's answer — the move you played, what
+it cost, which game it was — because a list you are choosing from has to be one
+you can tell apart. The solving screen still hands positions over cold. Solved ones come with
+everything: the move you played, what it cost, how the solve went, a link into
+the game, and a button that puts the position back on the board as a replay,
+which changes nothing that was recorded.
+
+**Hint** rings the pieces worth moving — up to five, because unlike a lichess
+puzzle there is usually more than one move that saves the position. It never
+rings nothing, and it does not narrow on the harder settings: it is a fact about
+the position, not about your difficulty. Taking one is recorded, so the stats
+can separate "found it" from "found it unaided".
+
+**Hide** takes a position out of the shuffle without deleting anything; Restore
+brings it back. There is no per-position delete, on purpose — the only thing
+that could be deleted is the whole game, and that throws away the engine time
+that analysed it for no space worth having. Settings still has a purge for when
+space really is the problem, and it now deletes the solve records of the games
+it drops.
+
+The dialog also totals your solves: how often you find the move without looking,
+and how that varies by side and by how bad the mistake was, using lichess' own
+inaccuracy/mistake/blunder thresholds.
+
 **This uses your processor, and it is meant to.** Blindspot is a chess engine
 running in a tab: every position is searched before you see it, so a long
 history means minutes of sustained load the first time through. On a phone that
