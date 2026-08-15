@@ -18,7 +18,14 @@ import { derivedKey, puzzlesFromGame } from '../deck/derive.ts';
 import { Engine, EngineUnavailable, type BootProgress } from '../engine/stockfish.ts';
 import type { Analyser } from '../engine/analyse.ts';
 import { ExportError, type ExportedGame } from '../lichess/export.ts';
-import { altVerdicts, DIFFICULTIES, Solve, TOP_LINES, type Difficulty } from '../solve/retro.ts';
+import {
+  altVerdicts,
+  DIFFICULTIES,
+  hintSquares,
+  Solve,
+  TOP_LINES,
+  type Difficulty,
+} from '../solve/retro.ts';
 import {
   mb,
   Profile,
@@ -232,6 +239,7 @@ export class App {
           <div class="feedback" id="feedback"></div>
           <div class="reveal" id="reveal"></div>
           <div class="controls">
+            <button id="hint" class="quiet">Hint</button>
             <button id="solution">Show solution</button>
             <button id="skip">Skip</button>
             <button id="next" hidden>Next position</button>
@@ -251,6 +259,7 @@ export class App {
     this.panel = undefined;
     this.paintStorageNote();
     this.board = new Board(this.root.querySelector('#board') as HTMLElement, m => void this.onMove(m));
+    (this.root.querySelector('#hint') as HTMLButtonElement).onclick = () => this.showHint();
     (this.root.querySelector('#solution') as HTMLButtonElement).onclick = () => void this.showSolution();
     (this.root.querySelector('#skip') as HTMLButtonElement).onclick = () => this.skip();
     (this.root.querySelector('#next') as HTMLButtonElement).onclick = () => void this.nextPuzzle();
@@ -966,6 +975,7 @@ export class App {
     this.attempts = 0;
     this.setReveal('');
     this.toggleNext(false);
+    (this.root.querySelector('#hint') as HTMLButtonElement | null)?.removeAttribute('disabled');
     this.renderCounters();
 
     const them = puzzle.pov === 'white' ? 'Black' : 'White';
@@ -1073,11 +1083,39 @@ export class App {
         at: Date.now(),
         result,
         attempts: this.attempts,
+        ...(solve.hinted ? { hinted: true } : {}),
       });
     await this.renderReveal(solve.puzzle);
     this.toggleNext(true);
     this.renderCounters();
     if (this.deck.unsolvedCount() < REFILL_AT) void this.refill();
+  }
+
+  /**
+   * Ring the pieces worth moving — lichess' puzzle hint, except that there is
+   * more than one right answer here, so there can be more than one piece.
+   *
+   * Up to five, one per ranked line the eval test accepts, deduplicated by
+   * square. It does not name a move and it does not narrow with difficulty (see
+   * `hintSquares`); it says "one of these is the piece", which on a position
+   * where four of the five lines are sound is genuinely most of the board's
+   * pieces — and that is the honest answer, not a reason to show fewer.
+   */
+  private showHint(): void {
+    const solve = this.solve;
+    if (!solve || !solve.isSolving()) return;
+    const squares = hintSquares(solve.puzzle);
+    solve.hinted = true;
+    this.board?.hint(squares);
+    (this.root.querySelector('#hint') as HTMLButtonElement | null)?.setAttribute('disabled', '');
+    this.setFeedback(
+      squares.length === 1
+        ? `<strong>One piece to move.</strong> <span>The ring is on it — the move is still yours
+             to find.</span>`
+        : `<strong>${squares.length} pieces would improve the position.</strong> <span>Moving any
+             of the ringed pieces can beat what was played; finding the best of them is the
+             rest of the job.</span>`,
+    );
   }
 
   private async showSolution(): Promise<void> {
@@ -1231,9 +1269,11 @@ export class App {
     const next = this.root.querySelector('#next') as HTMLButtonElement | null;
     const solution = this.root.querySelector('#solution') as HTMLButtonElement | null;
     const skip = this.root.querySelector('#skip') as HTMLButtonElement | null;
+    const hint = this.root.querySelector('#hint') as HTMLButtonElement | null;
     if (next) next.hidden = !show;
     if (solution) solution.hidden = show;
     if (skip) skip.hidden = show;
+    if (hint) hint.hidden = show;
   }
 
   private renderCounters(): void {

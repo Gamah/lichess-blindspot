@@ -6,6 +6,7 @@ import {
   altVerdicts,
   classify,
   judgeEval,
+  hintSquares,
   judgeRanked,
   Solve,
   TOP_LINES,
@@ -175,4 +176,44 @@ test('alt verdicts are the eval test alone, so difficulty cannot repaint them', 
   // simply asks more than sound. The numbers in the arrowheads say that part.
   assert.equal(altVerdicts(puzzle).length, puzzle.alts.length);
   assert.equal(altVerdicts({ ...puzzle, alts: [] }).length, 0);
+});
+
+test('a hint rings one piece per sound line, best first', () => {
+  // Four of the five beat Ng5; a2a3 does not, so the a-pawn is not ringed.
+  assert.deepEqual(hintSquares(puzzle), ['f1', 'd2', 'b1', 'e1']);
+});
+
+test('two sound lines from one piece are one hint', () => {
+  // A hint counts pieces, not moves: the knight going two places is one ring.
+  const knight: Puzzle = {
+    ...puzzle,
+    alts: [
+      { uci: 'b1c3', eval: 30 },
+      { uci: 'b1d2', eval: 25 },
+      { uci: 'f1c4', eval: 20 },
+    ],
+  };
+  assert.deepEqual(hintSquares(knight), ['b1', 'f1']);
+});
+
+test('a hint is never empty, even when no ranked line passes the eval test', () => {
+  // `classify` accepts `best` outright whatever the eval says, so that piece
+  // is always hintable and a hint that rings nothing would be a lie.
+  const hopeless: Puzzle = { ...puzzle, alts: [{ uci: 'f1c4', eval: -1200 }] };
+  assert.deepEqual(hintSquares(hopeless), ['f1']);
+});
+
+test('a hint does not narrow with difficulty', () => {
+  // The same decision as altVerdicts: it is a property of the position, so it
+  // says the same thing on Hard as on Easy. Nothing here reads TOP_LINES.
+  assert.equal(hintSquares(puzzle).length, 4);
+  assert.ok(TOP_LINES.hard < 4, 'and Hard would accept fewer moves than it rings pieces');
+});
+
+test('asking for a hint is recorded on the solve', () => {
+  const solve = new Solve(puzzle);
+  assert.equal(solve.hinted, false);
+  solve.hinted = true;
+  assert.equal(solve.play({ uci: 'f1c4', san: 'Bc4' }), 'win');
+  assert.equal(solve.hinted, true, 'and survives the solve that follows it');
 });

@@ -79,6 +79,15 @@ export const aboutPanel = (battery: string): string => `
   ${pitch()}
   ${steps()}
 
+  <h2>The hint</h2>
+  <p>Hint rings the pieces worth moving — <strong>up to five of them</strong>, because unlike a
+    lichess puzzle there is usually more than one move that saves the position. A ring means
+    moving that piece beats what was actually played; which of them is best, and where it goes,
+    is still yours to find. It never rings nothing, and it does not shrink on the harder
+    settings: what it shows is a fact about the position rather than about your difficulty.</p>
+  <p>Taking one is remembered, so the deck can tell you how often you found the move unaided.
+    Nothing else changes — a hinted solve still counts as solved.</p>
+
   <h2>The arrows on a solved position</h2>
   <p>When a position is done, the engine's five best moves from it go on the board, numbered
     and fading as they go down the list. <strong>Green means the move would have been

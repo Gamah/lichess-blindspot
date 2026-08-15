@@ -48,6 +48,10 @@ export interface DeckStats {
   solved: number;
   /** Solved without looking at the answer. */
   found: number;
+  /** Of those, how many were found without asking for a hint either. */
+  unaided: number;
+  /** How many positions a hint was asked for on, solved or not. */
+  hinted: number;
   /** Found on the very first move tried. */
   firstTry: number;
   /** Mean tries over the positions that were found; undefined when none were. */
@@ -72,6 +76,10 @@ function dayNumber(ms: number): number {
  * `rows` is every solve. A row whose position can no longer be derived still
  * counts towards the totals — it happened — but is left out of the breakdowns,
  * which need the position to say anything.
+ *
+ * `hinted` is absent on every record written before the Hint button existed,
+ * and reads as false, which is what it was. So the hint figures start at zero
+ * for a returning player rather than being wrong.
  */
 export function deckStats(
   rows: readonly ReviewRow[],
@@ -81,14 +89,18 @@ export function deckStats(
   const bySide = { white: empty(), black: empty() };
   const bands = new Map(BANDS.map(b => [b.label, empty()]));
   let found = 0;
-  let firstTry = 0;
+  let unaided = 0;
+  let hinted = 0;
   let tries = 0;
+  let firstTry = 0;
   const days = new Set<number>();
 
   for (const row of rows) {
     const won = row.result === 'win';
+    if (row.hinted) hinted++;
     if (won) {
       found++;
+      if (!row.hinted) unaided++;
       tries += row.attempts ?? 0;
       if ((row.attempts ?? 0) <= 1) firstTry++;
     }
@@ -114,6 +126,8 @@ export function deckStats(
     hidden: counts.hidden,
     solved: rows.length,
     found,
+    unaided,
+    hinted,
     firstTry,
     averageTries: found ? tries / found : undefined,
     bySide,

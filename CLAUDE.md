@@ -410,6 +410,38 @@ the copy in Settings and on the notice says it in those words — keep it that
 way, and do not let the copy claim a fixed *depth*: the limit is time, which is
 device-dependent, and that is written down a few paragraphs up.
 
+## The hint
+
+Lichess' puzzle hint rings the piece to move. Here there is usually more than
+one right answer, so it rings **up to five pieces**: `hintSquares`
+(`src/solve/retro.ts`) takes the origin square of every ranked line the eval
+test accepts, best first, deduplicated — two of the five lines are often the
+same piece going to different places, and a hint counts pieces.
+
+- **The eval test alone, not the difficulty gate.** The same decision as
+  `altVerdicts` and for the same reason: a hint is then a property of the
+  position and says the same thing on Easy as on Hard, rather than shrinking as
+  a setting is raised. A ring means "moving this improves on what was played";
+  Medium and Hard may still ask that the move be one the engine ranks highly,
+  which is what those settings *are*.
+- **Never empty.** If no ranked line passes the eval test, `classify` still
+  accepts `best` outright, so that piece is the hint. A hint that rings nothing
+  would be a lie about a position that has an answer.
+- It rings four of five pieces on a position where four lines are sound, and
+  that is the honest answer rather than a reason to show fewer.
+- `Board.hint` holds the squares the way `Board.mark` holds the red arrow, and
+  for the same reason: every `set` clears the shapes and a wrong answer re-sets
+  the position, so a hint drawn once would vanish on the first miss after it was
+  asked for. Both go through `applyMarks` as **auto**-shapes, so pressing the
+  board does not wipe them.
+
+**Asking for one is recorded.** `SolveRecord.hinted` is optional and absent on
+every record written before the button existed, which reads as false and is what
+it was — no schema bump, and the figures start at zero for a returning player
+rather than being wrong. The stats split "found" into `unaided` (no hint, no
+solution) and `hinted`, because "found it" and "found it after being shown which
+piece" are different results and one figure covering both would flatter.
+
 ## The settings, and what each one is allowed to touch
 
 Four dials, and the boundaries between them are the design:

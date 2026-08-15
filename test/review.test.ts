@@ -131,6 +131,8 @@ test('stats count what the records support, and nothing they do not', () => {
   const s = deckStats(rows, { waiting: 4, hidden: 2 }, at(12));
   assert.equal(s.solved, 3);
   assert.equal(s.found, 2);
+  assert.equal(s.hinted, 0, 'records written before the button existed read as no hint');
+  assert.equal(s.unaided, 2);
   assert.equal(s.firstTry, 1);
   assert.equal(s.averageTries, 2, 'averaged over the ones found, not over all three');
   assert.equal(s.waiting, 4);
@@ -157,4 +159,19 @@ test('a record with no position still counts towards the totals', () => {
   assert.equal(s.found, 1);
   assert.equal(s.bySide.white.solved + s.bySide.black.solved, 0);
   assert.equal(s.byBand.reduce((n, b) => n + b.tally.solved, 0), 0);
+});
+
+test('a hint separates "found it" from "found it unaided"', () => {
+  const rows = reviewRows(
+    [
+      { puzzleId: 'a:5', at: at(10), result: 'win', attempts: 1 },
+      { puzzleId: 'a:7', at: at(10), result: 'win', attempts: 2, hinted: true },
+      { puzzleId: 'b:9', at: at(10), result: 'view', attempts: 1, hinted: true },
+    ],
+    lookup([puzzle('a', 5), puzzle('a', 7), puzzle('b', 9)], [game('a'), game('b')]),
+  );
+  const s = deckStats(rows, { waiting: 0, hidden: 0 }, at(10));
+  assert.equal(s.found, 2, 'both wins count as found');
+  assert.equal(s.unaided, 1, 'but only one of them without a hint');
+  assert.equal(s.hinted, 2, 'and a hint counts even where it did not save the solve');
 });

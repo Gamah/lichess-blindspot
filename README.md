@@ -71,6 +71,12 @@ everything: the move you played, what it cost, how the solve went, a link into
 the game, and a button that puts the position back on the board as a replay,
 which changes nothing that was recorded.
 
+**Hint** rings the pieces worth moving — up to five, because unlike a lichess
+puzzle there is usually more than one move that saves the position. It never
+rings nothing, and it does not narrow on the harder settings: it is a fact about
+the position, not about your difficulty. Taking one is recorded, so the stats
+can separate "found it" from "found it unaided".
+
 **Hide** takes a position out of the shuffle without deleting anything; Restore
 brings it back. There is no per-position delete, on purpose — the only thing
 that could be deleted is the whole game, and that throws away the engine time

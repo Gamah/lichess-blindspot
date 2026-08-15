@@ -114,12 +114,13 @@ function gameLink(p: Puzzle, game: ExportedGame | undefined): string {
 const metaLine = (parts: readonly string[]): string =>
   `<div class="deck-card-meta">${parts.filter(Boolean).join(' · ')}</div>`;
 
-const outcome = (row: ReviewRow): string =>
-  row.result === undefined
-    ? '<span class="dim">not solved</span>'
-    : row.result === 'win'
-      ? `<span class="good">found it</span> in ${plural(row.attempts ?? 0, 'try', 'tries')}`
-      : `<span class="dim">looked at the answer</span>`;
+const outcome = (row: ReviewRow): string => {
+  const hint = row.hinted ? ' <span class="dim">(with a hint)</span>' : '';
+  if (row.result === undefined) return '<span class="dim">not solved</span>';
+  return row.result === 'win'
+    ? `<span class="good">found it</span> in ${plural(row.attempts ?? 0, 'try', 'tries')}${hint}`
+    : `<span class="dim">looked at the answer</span>${hint}`;
+};
 
 /** The row a record points at when its position can no longer be derived. */
 const gone = (r: ReviewRow, actions: string): string => `
@@ -223,6 +224,8 @@ function statsBlock(s: DeckStats): string {
     <ul class="stat-figures">
       ${figure(String(s.solved), 'solved')}
       ${figure(percent(s.found, s.solved), 'found without looking')}
+      ${figure(percent(s.unaided, s.solved), 'found unaided')}
+      ${figure(percent(s.hinted, s.solved), 'took a hint')}
       ${figure(percent(s.firstTry, s.solved), 'found first try')}
       ${figure(s.averageTries ? s.averageTries.toFixed(1) : '—', 'tries when found')}
       ${figure(String(s.recent), 'in the last 7 days')}
@@ -233,7 +236,9 @@ function statsBlock(s: DeckStats): string {
       ${s.bySide.white.solved ? bar('As White', s.bySide.white) : ''}
       ${s.bySide.black.solved ? bar('As Black', s.bySide.black) : ''}
     </ul>
-    <p class="hint">Each bar is how often you found the move without looking at the answer.
+    <p class="hint"><em>Found unaided</em> is found without looking at the answer <em>and</em>
+      without taking a hint; the two figures next to it are the same total split the other way.
+      Each bar is how often you found the move without looking at the answer.
       The three bands are lichess' own thresholds for an inaccuracy, a mistake and a blunder,
       so the shape of that list says something about your play rather than about this app.
       Nothing here is recorded beyond the result, the number of tries and the date, and none

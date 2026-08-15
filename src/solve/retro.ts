@@ -120,6 +120,33 @@ const scoreOf = (alt: Alt): EvalScore =>
 export const altVerdicts = (puzzle: Puzzle): boolean[] =>
   puzzle.alts.map(alt => judgeEval(puzzle, scoreOf(alt)) === 'win');
 
+/**
+ * The pieces a hint points at: the origin square of every ranked line that the
+ * eval test would accept, best first, one entry per piece.
+ *
+ * **The eval test alone, deliberately — not the difficulty gate.** The same
+ * decision as `altVerdicts` and for the same reason: a hint is then a property
+ * of the position, so it says the same thing on Easy and on Hard rather than
+ * shrinking as a setting is raised. A ringed piece means "moving this improves
+ * the position"; on Medium and Hard the setting may still ask that the move be
+ * one the engine ranks highly, which is what those settings are.
+ *
+ * Deduplicated by square, because two of the five lines are often the same
+ * piece going to different places and a hint counts *pieces*. Never empty: if
+ * no ranked line passes the eval test, `classify` still accepts `best`
+ * outright, so that piece is the hint.
+ */
+export function hintSquares(puzzle: Puzzle): string[] {
+  const sound = altVerdicts(puzzle);
+  const squares: string[] = [];
+  puzzle.alts.forEach((alt, i) => {
+    if (!sound[i]) return;
+    const from = alt.uci.slice(0, 2);
+    if (!squares.includes(from)) squares.push(from);
+  });
+  return squares.length ? squares : [puzzle.best.slice(0, 2)];
+}
+
 export interface Move {
   uci: string;
   san: string;
@@ -176,6 +203,12 @@ export function judgeEval(puzzle: Puzzle, yourEval: EvalScore): 'win' | 'fail' {
  */
 export class Solve {
   feedback: Feedback = 'find';
+  /**
+   * A hint was asked for on this position. Recorded with the solve, because
+   * "found it" and "found it after being shown which piece" are different
+   * results and the stats would otherwise flatter.
+   */
+  hinted = false;
   /** Set on a fail, so the board can show what went wrong before resetting. */
   lastAttempt: Move | undefined;
   /** Where the last attempt sat in the engine's order, 0-based, or -1. */

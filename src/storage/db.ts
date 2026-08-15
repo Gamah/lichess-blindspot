@@ -47,6 +47,12 @@ export interface SolveRecord {
   /** 'win' found it, 'view' gave up and looked. */
   result: 'win' | 'view';
   attempts: number;
+  /**
+   * A hint was asked for. Optional, and absent on every record written before
+   * the button existed — which needs no schema bump, because a missing field
+   * reads as "no hint" and that is exactly what it was.
+   */
+  hinted?: boolean;
 }
 
 export interface HideRecord {

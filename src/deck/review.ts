@@ -30,6 +30,8 @@ export interface ReviewRow {
   /** 'win' found it, 'view' gave up and looked. Absent on a hidden-but-unsolved one. */
   result?: 'win' | 'view';
   attempts?: number;
+  /** A hint was asked for on it. */
+  hinted?: boolean;
   /**
    * The position itself — absent when it can no longer be derived. That is not
    * corruption: a `solve:` record is keyed by `gameId:ply`, so lowering
@@ -79,7 +81,12 @@ export function reviewRows(
   return newestFirst(
     solves
       .filter(s => !hidden.has(s.puzzleId))
-      .map(s => ({ ...rowOf(s.puzzleId, s.at, from), result: s.result, attempts: s.attempts })),
+      .map(s => ({
+        ...rowOf(s.puzzleId, s.at, from),
+        result: s.result,
+        attempts: s.attempts,
+        ...(s.hinted ? { hinted: true } : {}),
+      })),
   );
 }
 
@@ -99,7 +106,9 @@ export function hiddenRows(
       const solved = bySolve.get(h.puzzleId);
       return {
         ...rowOf(h.puzzleId, h.at, from),
-        ...(solved ? { result: solved.result, attempts: solved.attempts } : {}),
+        ...(solved
+          ? { result: solved.result, attempts: solved.attempts, ...(solved.hinted ? { hinted: true } : {}) }
+          : {}),
       };
     }),
   );

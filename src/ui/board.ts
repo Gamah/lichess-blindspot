@@ -57,6 +57,11 @@ const RANK_BRUSHES: Record<string, Brush> = {
   // The one you found, at full strength: a pass, weighted so "yours" is
   // visible among the other greens without a third colour.
   found: { key: 'fnd', color: '#15781B', opacity: 0.95, lineWidth: 12 },
+  // The hint: a circle round a piece worth moving. Chessground draws a shape
+  // with an `orig` and no `dest` as a ring on that square, which is the shape
+  // lichess' own puzzle hint uses. Fainter than `found` because a hint points
+  // at a piece rather than asserting a move.
+  hint: { key: 'hnt', color: '#15781B', opacity: 0.7, lineWidth: 8 },
 };
 
 /** One line of the stored ranking, with the verdict the eval test gives it. */
@@ -83,6 +88,13 @@ export class Board {
    * the board's shapes and a wrong answer re-sets the position.
    */
   private marked: string | undefined;
+  /**
+   * Squares to ring — the pieces a hint says are worth moving. Held for the
+   * same reason `marked` is: every `set` clears the board's shapes, and a wrong
+   * answer re-sets the position, so a hint drawn once would vanish on the first
+   * miss after it was asked for.
+   */
+  private hinted: readonly string[] = [];
   private orientation: Color = 'white';
 
   private readonly el: HTMLElement;
@@ -114,8 +126,9 @@ export class Board {
     pause = 700,
   ): Promise<void> {
     const token = ++this.presenting;
-    // Whatever was marked belonged to the last position.
+    // Whatever was marked or hinted belonged to the last position.
     this.marked = undefined;
+    this.hinted = [];
     if (!intro) return this.set(fen, orientation, true);
 
     this.set(intro.fen, orientation, false);
@@ -159,8 +172,23 @@ export class Board {
     this.applyMarks();
   }
 
+  /**
+   * Ring these squares — up to one per piece worth moving. Adds to whatever is
+   * marked rather than replacing it: the red arrow and the hint say different
+   * things and are both true at once.
+   */
+  hint(squares: readonly string[]): void {
+    this.hinted = squares;
+    this.applyMarks();
+  }
+
   private applyMarks(): void {
-    this.cg.setAutoShapes(this.marked ? [arrow(this.marked, 'red')] : []);
+    this.cg.setAutoShapes([
+      // Auto-shapes, not shapes: pressing the board runs chessground's
+      // `drawClear`, which empties `shapes` and leaves `autoShapes` alone.
+      ...this.hinted.map(square => ({ orig: square as Key, brush: 'hint' })),
+      ...(this.marked ? [arrow(this.marked, 'red')] : []),
+    ]);
   }
 
   /**
