@@ -575,53 +575,69 @@ person typed, and so nothing in it escapes anything — keep it that way.
 
 ## The deck, looked at rather than dealt from
 
-The **Deck** panel is the third tenant of `#panel`, and **the rule at the top of
-`ui/app.ts` decides its entire shape**: until a position is solved, nothing may
-say where it came from. So its two halves cannot be listed the same way, and the
-asymmetry is the design rather than an unfinished list.
+The **Deck** dialog shows every position in the deck as a board. `#panel` stays
+two modes; the deck is a `<dialog>` opened with `showModal()`, and that is not
+decoration — it is a grid that runs to hundreds of cards, and reading it must
+not push the board being solved off the screen. Native modal also brings the
+backdrop, Escape, the focus trap and inerting the page behind it, none of which
+a hand-rolled overlay gets right for free.
 
-- **Waiting: a count and a spread, no rows.** `waitingSummary` (`src/deck/review.ts`)
-  returns how many positions are pending and how many games they span, and that
-  is all that may be said — naming an unsolved position is exactly the leak the
-  app exists to prevent, and a list of positions that *cannot* be told apart is
-  what the shuffle already is. The panel says so in a sentence, because a
-  missing list otherwise reads as a missing feature.
-- **Solved: everything.** `reviewRows` joins the `solve:` records to the derived
-  puzzles and the stored games, newest solve first. `renderReveal` has already
-  discharged the rule for these.
+**The rule at the top of `ui/app.ts` forbids less than it first appears, and
+this is where the distinction gets made.** It is about **where a position came
+from** — the game, the opponent, the date, the move number, the evaluation —
+not about the position itself, which is handed over in full the moment the
+puzzle is dealt. So *both* halves of the deck are shown as boards, and they
+differ only in what goes around them: an unsolved card carries the position and
+"White to play" and nothing else, a solved one carries everything, because
+`renderReveal` has already said all of it once. An earlier version of this
+withheld the unsolved half entirely, reasoning from the strong reading; that was
+wrong, and the argument against it is that a dozen boards side by side tell you
+no more than each one does alone, because there is nothing shared between them
+to read off.
 
-Two things worth keeping:
+Both halves page at `PAGE_SIZE` (12), independently, because each card is a
+chessground instance and a few hundred of them built on open is not a dialog
+that appears instantly. `clampPage` is applied on render rather than on the
+click, so a page held while a purge or a settings change shrank the list lands
+on the last page instead of on nothing. The rows are read once per open and held
+in `App.deckRows`, dropped on `close` so the next open is fresh.
 
-- **A solve record can outlive its position, and the row survives that.** A
-  `solve:` key is `gameId:ply`, so purging the game or lowering `maxPerGame`
-  past a ply leaves a record with nothing to derive from. `ReviewRow.puzzle` is
-  optional for exactly that, and the row still renders — quietly dropping
-  someone's history is worse than a row that says the position is gone. It is
-  also why the "Bring back N" count in Settings can exceed the replayable rows.
-- **A replay is not a solve.** `App.replaying` is set by `App.replay` and
+Three things worth keeping:
+
+- **A replay is not a solve.** `App.replaying` is set by `App.fromDeck` and
   cleared by `nextPuzzle`; `finish` skips `recordSolve` while it is set. Without
   that, going back over a position you found first time and then pressing Show
   solution would overwrite the record with "looked at the answer", which is a
   worse account of what happened than none. The position is already out of the
-  shuffle, so the write would buy nothing either. `App.present` is the shared
-  half of `nextPuzzle` and `replay`: the two differ only in what the deck did
-  first and whether the result is written down, never in what is shown.
+  shuffle, so the write would buy nothing either. Dealing a *waiting* position
+  out of turn is the other door through `fromDeck` and is an ordinary solve:
+  `Deck.take` lifts it out of `pending` exactly as `next()` would have.
+- **`App.present` is the shared half of `nextPuzzle` and `fromDeck`.** They
+  differ only in what the deck did first and whether the result is written down,
+  never in what is shown.
+- **A solve record can outlive its position, and the row survives that.** A
+  `solve:` key is `gameId:ply`, so lowering `maxPerGame` past a ply leaves a
+  record with nothing to derive from. `ReviewRow.puzzle` is optional for exactly
+  that and the row still renders, saying why — quietly dropping someone's
+  history is worse. Purging no longer causes this; see below.
 
-`src/ui/format.ts` exists because of this panel: `escape`, `showEval`, `gameUrl`
-and `moveNumber` were private to `app.ts` while the reveal was the only screen
-allowed to know a position's origin. The deck panel is the second, and it says
-the same things, so they moved rather than being written twice.
+`src/ui/format.ts` exists because of this dialog: `escape`, `showEval`,
+`gameUrl` and `moveNumber` were private to `app.ts` while the reveal was the
+only screen allowed to know a position's origin. There are two now.
 
-**How an existing user is told a setting exists.** The same shape as the schema
-reset, and the only other thing in the app that gates the front door:
-`Settings.difficulty` is **absent** until chosen, and `App.begin` asks
-`profile.hasGames()`. Games present and no choice recorded means someone who
-has been solving under the old rule, and they get `renderDifficultyNotice`
-once — which is also where the catch-up ranking pass is explained, since that
-is the visible cost of the change. An *empty* store is a first visit — nothing
-to be surprised by — so the default is written silently and the notice never
-appears. Without that stamp a new player would meet the notice on their second
-visit, announcing a change that never happened to them.
+**Purging games takes their solve records with them.** `purgeGames` deletes the
+`solve:<gameId>:` keys of every game it drops and returns `{games, solves}`;
+`forgetGame` does the same for one. It did not, on the grounds that a record is
+tiny and `gameId:ply` is what a position *is* — but deleting a game deletes the
+position, so what survived was a record of solving something that no longer
+exists: unshowable in the deck dialog, unreplayable, and silently inflating
+"bring back solved" with positions that can never come back. Purging is asked
+for in order to be rid of something. The copy in Settings, About and
+`storagePressure()` says so; it used to promise the opposite ("your solve
+history survives either way"), so do not reintroduce that sentence.
+
+A schema reset still takes everything (see `Profile.reset`), and that is
+unchanged and unrelated.
 
 ## Browsers that refuse storage
 

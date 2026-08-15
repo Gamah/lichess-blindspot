@@ -1,17 +1,21 @@
 // What the deck panel shows, worked out away from the DOM.
 //
-// The rule at the top of `ui/app.ts` decides the whole shape of this, and it is
-// worth restating because it is easy to break here of all places: **until a
-// position is solved, nothing may say where it came from.** So the two halves
-// of the deck cannot be listed the same way.
+// The rule at the top of `ui/app.ts` decides the shape of this, and it is worth
+// being precise about what it actually forbids, because the obvious reading is
+// too strong: **until a position is solved, nothing may say where it came
+// from** — the game, the opponent, the date, the move number, the evaluation.
+// It says nothing about the position itself, which is handed over in full the
+// moment the puzzle is dealt.
 //
-//   waiting  — a count and a spread, no rows. Naming a waiting position is
-//              exactly the leak the app exists to avoid, and a list of
-//              anonymous rows would be a list of things that cannot be told
-//              apart, which is what the shuffle already is.
+// So both halves of the deck can be shown, and they differ only in how much
+// goes around the board:
+//
+//   waiting  — the position, and which side is to move. Nothing else. Seeing a
+//              dozen at once adds nothing to seeing one, because there is
+//              nothing shared between them to read off.
 //   solved   — everything. The game, the opponent, the date, the move number,
-//              the swing, how it went. This is the half that makes the feature
-//              worth having.
+//              the swing, how it went. `renderReveal` has already said all of
+//              it once.
 //
 // Pure: no DOM, no engine, no storage. Runs under `node --test`.
 
@@ -28,11 +32,12 @@ export interface ReviewRow {
   attempts: number;
   /**
    * The position itself — absent when it can no longer be derived. That is not
-   * corruption: a `solve:` record is keyed by `gameId:ply` and outlives
-   * everything, so purging the game, or lowering "positions per game" until
-   * this one falls outside the cap, leaves a record with no position behind it.
-   * The row still appears, because quietly dropping someone's history is worse
-   * than a row that says the position is gone.
+   * corruption: a `solve:` record is keyed by `gameId:ply`, so lowering
+   * "positions per game" until this one falls outside the cap leaves a record
+   * with no position behind it. (Purging the game no longer does — `purgeGames`
+   * takes the solve records with it.) The row still appears, because quietly
+   * dropping someone's history is worse than a row that says why it is not
+   * showing the position.
    */
   puzzle?: Puzzle;
   /** The game it came from, when that is still stored. */
@@ -73,9 +78,10 @@ export interface WaitingSummary {
 }
 
 /**
- * All that may be said about the unsolved half. The spread is worth saying —
- * "forty positions, from six games" is a different deck from "forty, from
- * thirty-eight" — and it names no position, so it leaks nothing.
+ * The heading over the unsolved half. The spread is worth saying — "forty
+ * positions, from six games" is a different deck from "forty, from thirty-eight"
+ * — and it is a fact about the deck rather than about any position in it, so it
+ * gives none of them away.
  */
 export function waitingSummary(pending: readonly Puzzle[]): WaitingSummary {
   return { count: pending.length, games: new Set(pending.map(p => p.gameId)).size };

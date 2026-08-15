@@ -39,11 +39,11 @@ import {
   settings,
 } from '../storage/prefs.ts';
 import type { IsolationReport } from '../isolation.ts';
-import { reviewRows, waitingSummary } from '../deck/review.ts';
+import { reviewRows, waitingSummary, type ReviewRow } from '../deck/review.ts';
 import { aboutPanel, fineprint, pitch, steps } from './about.ts';
 import { escape, gameUrl, moveNumber, showEval } from './format.ts';
-import { deckPanel } from './review.ts';
-import { Board, type PlayedMove } from './board.ts';
+import { deckPanel, type DeckPages } from './review.ts';
+import { Board, miniBoard, type PlayedMove } from './board.ts';
 import { footer, GATE_GAMES, GATE_PUZZLES, LoadingScreen } from './loading.ts';
 
 /** Fetch more when the deck gets this thin. */
@@ -57,8 +57,8 @@ const JUDGE_MOVETIME = 1000;
  */
 const BUSY_WAIT = 60_000;
 
-/** The one panel element has three tenants; `App.panel` says which is in. */
-type PanelKind = 'settings' | 'about' | 'deck';
+/** The inline panel under the board has two tenants; `App.panel` says which. */
+type PanelKind = 'settings' | 'about';
 
 export class App {
   private profile: Profile | undefined;
@@ -71,7 +71,7 @@ export class App {
    */
   private derived = new Map<string, { key: string; puzzles: Puzzle[] }>();
   private board: Board | undefined;
-  /** Which of the three things the one panel is currently showing, if it is open. */
+  /** Which of the two things the inline panel is currently showing, if it is open. */
   private panel: PanelKind | undefined;
   /**
    * The position on the board is a replay of one already solved, picked out of
@@ -80,6 +80,12 @@ export class App {
    * answer", which is a worse record of what happened than no record.
    */
   private replaying = false;
+  /**
+   * The deck dialog's rows, held only while it is open — closing it drops them
+   * so the next open reads fresh records rather than showing a stale list.
+   */
+  private deckRows: readonly ReviewRow[] | undefined;
+  private deckPages: DeckPages = { waiting: 0, solved: 0 };
   /** Owns the loading screen's DOM between progress events; see `renderLoading`. */
   private loading: LoadingScreen | undefined;
   private solve: Solve | undefined;
@@ -210,7 +216,7 @@ export class App {
       <header class="topbar">
         <span class="who">${escape(this.profile?.username ?? '')}</span>
         <span class="spacer"></span>
-        <button id="deck" class="quiet">Deck</button>
+        <button id="deck-open" class="quiet">Deck</button>
         <button id="about" class="quiet">About</button>
         <button id="settings" class="quiet">Settings</button>
         <button id="switch" class="quiet">Switch player</button>
@@ -231,6 +237,7 @@ export class App {
         </aside>
       </main>
       <div class="panel" id="panel" hidden></div>
+      <dialog class="deck-dialog" id="deck-dialog"></dialog>
       ${footer()}`;
     this.panel = undefined;
     this.paintStorageNote();
@@ -241,11 +248,16 @@ export class App {
     (this.root.querySelector('#switch') as HTMLButtonElement).onclick = () => this.switchPlayer();
     (this.root.querySelector('#settings') as HTMLButtonElement).onclick = () => void this.togglePanel('settings');
     (this.root.querySelector('#about') as HTMLButtonElement).onclick = () => void this.togglePanel('about');
-    (this.root.querySelector('#deck') as HTMLButtonElement).onclick = () => void this.togglePanel('deck');
+    (this.root.querySelector('#deck-open') as HTMLButtonElement).onclick = () => void this.openDeck();
+    // Escape and the backdrop are the dialog's own; this is the only state we keep.
+    (this.root.querySelector('#deck-dialog') as HTMLDialogElement).onclose = () => {
+      this.deckRows = undefined;
+    };
   }
 
   /**
-   * The one panel, in one of three modes.
+   * The inline panel, in one of two modes. The deck is not one of them — it is
+   * a modal dialog, for the reason written at the top of `review.ts`.
    *
    * About is here because there is otherwise **no way back to the explanation**
    * once a username has been typed: the landing page is reachable only through
@@ -256,7 +268,7 @@ export class App {
   private async togglePanel(kind: PanelKind): Promise<void> {
     const panel = this.root.querySelector('#panel') as HTMLElement | null;
     if (!panel || !this.profile) return;
-    // The button that opened it also closes it; the other buttons switch.
+    // The button that opened it also closes it; the other button switches.
     if (!panel.hidden && this.panel === kind) return this.closePanel();
     this.panel = kind;
     panel.hidden = false;
@@ -268,7 +280,6 @@ export class App {
       panel.scrollIntoView({ block: 'start', behavior: 'smooth' });
       return;
     }
-    if (kind === 'deck') return this.renderDeckPanel(panel);
     await this.renderSettings(panel);
   }
 
@@ -283,52 +294,87 @@ export class App {
   }
 
   /**
-   * The deck, looked at rather than dealt from. Both halves come out of what is
-   * already in memory — the derivation cache and the solve records — so opening
-   * this costs one IndexedDB read and no engine time.
+   * The deck, looked at rather than dealt from — a modal dialog rather than the
+   * inline panel, because it is a grid of boards that can run to hundreds and
+   * reading it must not scroll the board being solved off the screen.
    *
-   * The asymmetry between the halves is deliberate and is explained where the
-   * rows are built (`deck/review.ts`): the unsolved ones are a count, because
-   * saying anything else about a position nobody has solved is the leak this
-   * whole app is arranged to avoid.
+   * Everything shown comes out of what is already in memory (the derivation
+   * cache) plus one read of the solve records, so opening it costs no engine
+   * time. The rows are then held for as long as the dialog is open: turning a
+   * page re-renders a dozen cards and touches storage again for nothing.
    */
-  private async renderDeckPanel(panel: HTMLElement): Promise<void> {
+  private async openDeck(): Promise<void> {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
     const profile = this.profile;
-    if (!profile) return;
+    if (!dialog || !profile) return;
+    this.deckPages = { waiting: 0, solved: 0 };
+    dialog.innerHTML = '<p class="hint">Reading your deck…</p>';
+    dialog.showModal();
     const [solves, games] = await Promise.all([profile.solves(), profile.games()]);
-    // Switch player is one click and two reads are not instant.
-    if (this.profile !== profile || this.panel !== 'deck') return;
+    // Switch player is one click, and two reads are not instant.
+    if (this.profile !== profile || !dialog.open) return;
     const puzzles = [...this.derived.values()].flatMap(entry => entry.puzzles);
-    const rows = reviewRows(solves, puzzles, games);
-    panel.innerHTML = deckPanel(waitingSummary(this.deck.waiting()), rows);
-    this.wireClose(panel);
-    for (const button of panel.querySelectorAll<HTMLButtonElement>('button[data-review]')) {
-      const id = button.dataset.review!;
-      button.onclick = () => void this.replay(id);
+    this.deckRows = reviewRows(solves, puzzles, games);
+    this.paintDeck();
+  }
+
+  /**
+   * Render the dialog from what is held. Called on open and on every page turn,
+   * which is why it mounts its own boards: `innerHTML` throws the previous
+   * page's chessground instances away with the markup, and they hold no state
+   * worth keeping — `miniBoard` is view-only and has no listeners of its own.
+   */
+  private paintDeck(): void {
+    const dialog = this.root.querySelector('#deck-dialog') as HTMLDialogElement | null;
+    const rows = this.deckRows;
+    if (!dialog?.open || !rows) return;
+    const waiting = this.deck.waiting();
+    dialog.innerHTML = deckPanel(waitingSummary(waiting), waiting, rows, this.deckPages);
+    (dialog.querySelector('#close') as HTMLButtonElement).onclick = () => dialog.close();
+    for (const el of dialog.querySelectorAll<HTMLElement>('.mini[data-fen]'))
+      miniBoard(el, el.dataset.fen!, el.dataset.pov === 'black' ? 'black' : 'white');
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-review]'))
+      button.onclick = () => void this.fromDeck(button.dataset.review!, true);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-serve]'))
+      button.onclick = () => void this.fromDeck(button.dataset.serve!, false);
+    for (const button of dialog.querySelectorAll<HTMLButtonElement>('button[data-page]')) {
+      const [half, page] = button.dataset.page!.split(':') as ['waiting' | 'solved', string];
+      button.onclick = () => {
+        this.deckPages = { ...this.deckPages, [half]: Number(page) };
+        this.paintDeck();
+        dialog.scrollTop = 0;
+      };
     }
   }
 
   /**
-   * Put a solved position back on the board. It stays solved: the deck already
-   * counts it that way, `serve` only makes it the thing on screen, and `finish`
-   * writes nothing while `replaying` is set — see the field.
+   * Put a position from the dialog on the board. Two doors into one thing:
+   *
+   * - **replay** a solved one. It stays solved — the deck already counts it
+   *   that way, `serve` only makes it the thing on screen — and `finish` writes
+   *   nothing while `replaying` is set, so a replay cannot overwrite the record
+   *   of how it went the first time.
+   * - **deal** a waiting one out of turn. `take` lifts it out of `pending`
+   *   exactly as `next()` would have when its turn came, so it is an ordinary
+   *   solve and is recorded like one.
    *
    * Whatever was on the board goes back in the queue, unsolved, exactly as Skip
-   * leaves it. `requeue` ignores a puzzle that is already solved, so replaying
-   * one replay after another cannot pile them into `pending`.
+   * leaves it. `requeue` ignores a puzzle that is already solved, so a run of
+   * replays cannot pile them into `pending`.
    */
-  private async replay(puzzleId: string): Promise<void> {
-    const puzzle = [...this.derived.values()]
-      .flatMap(entry => entry.puzzles)
-      .find(p => p.id === puzzleId);
+  private async fromDeck(puzzleId: string, replaying: boolean): Promise<void> {
+    const puzzle = replaying
+      ? [...this.derived.values()].flatMap(entry => entry.puzzles).find(p => p.id === puzzleId)
+      : this.deck.waiting().find(p => p.id === puzzleId);
     if (!puzzle) return;
     const current = this.deck.current();
     if (current && current.id !== puzzleId) this.deck.requeue(current);
-    this.closePanel();
+    (this.root.querySelector('#deck-dialog') as HTMLDialogElement | null)?.close();
     this.awaitingPuzzles = false;
     clearTimeout(this.exhaustedTimer);
-    this.deck.serve(puzzle);
-    this.replaying = true;
+    if (replaying) this.deck.serve(puzzle);
+    else if (!this.deck.take(puzzleId)) return;
+    this.replaying = replaying;
     await this.present(puzzle);
   }
 
@@ -345,6 +391,7 @@ export class App {
     this.derived = new Map();
     this.solve = undefined;
     this.replaying = false;
+    this.deckRows = undefined;
     this.board = undefined;
     this.progress = { gamesDone: 0, gamesPending: 0, engineBusy: false };
     this.unlocked = false;
@@ -431,8 +478,10 @@ export class App {
             ? `Using ${mb(estimate.usage)} of ${mb(estimate.quota)} available. `
             : 'This browser will not say how much space it is using. '
         }A stored game carries the analysis of it, and the positions you solve are built from
-          that, so deleting games deletes their positions too. Nothing is ever discarded on its
-          own; your solve history survives either way.</p>
+          that, so deleting games deletes their positions — <strong>and the record of having
+          solved them</strong>, which would otherwise be a note about a position that no longer
+          exists. Nothing is ever discarded on its own initiative; this button is the only thing
+          that deletes games.</p>
       </div>
 
       <div class="setting">
@@ -525,12 +574,13 @@ export class App {
       status(`Using ${using} core${using === 1 ? '' : 's'}.`);
     };
     (panel.querySelector('#purge') as HTMLButtonElement).onclick = async () => {
-      const dropped = await this.profile?.purgeGames();
+      const dropped = (await this.profile?.purgeGames()) ?? { games: 0, solves: 0 };
       this.pipeline?.recheckFull();
       await this.buildDeck();
       this.renderCounters();
       status(
-        `${dropped ?? 0} game${dropped === 1 ? '' : 's'} deleted, and the positions from them. ` +
+        `${dropped.games} game${dropped.games === 1 ? '' : 's'} deleted, the positions from them, ` +
+          `and ${dropped.solves} solved record${dropped.solves === 1 ? '' : 's'}. ` +
           `${this.deck.unsolvedCount()} waiting.`,
       );
     };

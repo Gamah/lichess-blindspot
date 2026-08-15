@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { reviewRows, waitingSummary } from '../src/deck/review.ts';
+import { PAGE_SIZE, clampPage, pageCount, pageOf } from '../src/ui/review.ts';
 import type { Puzzle } from '../src/deck/build.ts';
 import type { ExportedGame } from '../src/lichess/export.ts';
 import type { SolveRecord } from '../src/storage/db.ts';
@@ -73,4 +74,24 @@ test('the waiting summary counts positions and the games they span', () => {
     games: 2,
   });
   assert.deepEqual(waitingSummary([]), { count: 0, games: 0 });
+});
+
+test('paging clamps rather than running off either end', () => {
+  const rows = Array.from({ length: PAGE_SIZE * 2 + 1 }, (_, i) => puzzle('a', i));
+  assert.equal(pageCount(rows.length), 3);
+  assert.equal(clampPage(-4, rows.length), 0);
+  assert.equal(clampPage(99, rows.length), 2);
+  // The case this exists for: a page held while a purge shrank the list.
+  assert.equal(clampPage(2, 1), 0);
+  assert.equal(pageCount(0), 1, 'an empty list is still one page, not zero');
+});
+
+test('a page is its own slice, and the last one is short', () => {
+  const rows = Array.from({ length: PAGE_SIZE + 3 }, (_, i) => puzzle('a', i));
+  assert.equal(pageOf(rows, 0).length, PAGE_SIZE);
+  assert.equal(pageOf(rows, 1).length, 3);
+  assert.equal(pageOf(rows, 0)[0], rows[0]);
+  assert.equal(pageOf(rows, 1)[0], rows[PAGE_SIZE]);
+  // Clamped, so an out-of-range page shows the last one rather than nothing.
+  assert.deepEqual(pageOf(rows, 9), pageOf(rows, 1));
 });

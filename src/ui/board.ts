@@ -377,3 +377,24 @@ const PIECE_NAMES ={ q: 'queen', r: 'rook', b: 'bishop', n: 'knight' } as const;
 const turnOf = (fen: string): Color => (fen.split(' ')[1] === 'b' ? 'black' : 'white');
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * A small, dead board for the deck dialog — no moves, no coordinates, no
+ * drawing. Chessground rather than hand-rolled markup because it already knows
+ * how to turn a FEN into pieces and how to flip; a dozen view-only instances
+ * cost nothing next to the one that is being played on.
+ *
+ * The position and nothing else. That is the whole of what may be shown for an
+ * unsolved puzzle — see the note in `deck/review.ts` — and it is also all a
+ * thumbnail is any good at.
+ */
+export function miniBoard(el: HTMLElement, fen: string, orientation: Color): void {
+  Chessground(el, {
+    fen,
+    orientation,
+    viewOnly: true,
+    coordinates: false,
+    animation: { enabled: false, duration: 0 },
+    drawable: { enabled: false, visible: false },
+  });
+}

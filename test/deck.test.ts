@@ -128,3 +128,22 @@ test('a candidate becomes a puzzle holding the position before the mistake', () 
   // and that move must land exactly on the position being solved
   assert.equal(steps[3]!.after, p!.fen);
 });
+
+test('take deals a named position out of turn, once', () => {
+  const deck = new Deck(seeded(7));
+  deck.add([puzzle('a', 1), puzzle('b', 2), puzzle('c', 3)]);
+  const taken = deck.take('b:2');
+  assert.equal(taken?.id, 'b:2');
+  assert.equal(deck.current()?.id, 'b:2', 'it becomes the served puzzle, as next() would leave it');
+  assert.equal(deck.unsolvedCount(), 2, 'and it leaves the queue');
+  assert.equal(deck.take('b:2'), undefined, 'asking twice — a stale dialog — gets nothing');
+  assert.equal(deck.take('nope:1'), undefined);
+});
+
+test('waiting is what is still to be dealt, in order', () => {
+  const deck = new Deck(seeded(3));
+  deck.add([puzzle('a', 1), puzzle('b', 2)]);
+  assert.equal(deck.waiting().length, 2);
+  const dealt = deck.next()!;
+  assert.deepEqual(deck.waiting().map(p => p.id), [dealt.id === 'a:1' ? 'b:2' : 'a:1']);
+});

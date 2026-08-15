@@ -16,7 +16,7 @@
 // "re-fetchable" and is never evicted automatically — deleting it deletes the
 // engine time that produced it, and the positions with it. See CLAUDE.md.
 
-import { clear, createStore, del, delMany, entries, get, set, type UseStore } from 'idb-keyval';
+import { clear, createStore, delMany, entries, get, set, type UseStore } from 'idb-keyval';
 
 import type { ExportedGame } from '../lichess/export.ts';
 
@@ -172,25 +172,64 @@ export class Profile {
     }, undefined);
 
   /**
-   * Drop stored games, newest `keep` kept — and with them their analysis and
-   * every position derived from it. Manual only: nothing here is cheap enough
-   * to throw away on our own initiative any more.
+   * Drop stored games, newest `keep` kept — and with them their analysis, every
+   * position derived from it, **and the record of having solved those
+   * positions**. Manual only: nothing here is cheap enough to throw away on our
+   * own initiative any more.
+   *
+   * The solve records used to survive a purge, on the grounds that they are
+   * tiny and that `gameId:ply` is what a position *is*. That was wrong to leave
+   * as the default: deleting a game deletes the position, so what is left is a
+   * record of solving something that no longer exists — it cannot be shown in
+   * the deck panel, cannot be replayed, and silently inflates "bring back
+   * solved" with positions that will never come back. Purging is asked for in
+   * order to make room and be rid of something; leaving half of it behind is
+   * not what the button says.
    */
-  purgeGames = (keep = 0): Promise<number> =>
+  purgeGames = (keep = 0): Promise<PurgeResult> =>
     this.use(async store => {
-      const games = (await entries<string, unknown>(store))
+      const all = await entries<string, unknown>(store);
+      const games = all
         .filter(([k]) => isPrefixed(GAME)(k))
-        .map(([k, v]) => [k, v as ExportedGame] as const)
+        .map(([k, v]) => [k as string, v as ExportedGame] as const)
         .sort((a, b) => (b[1].createdAt ?? 0) - (a[1].createdAt ?? 0));
-      const drop = games.slice(keep).map(([k]) => k);
-      await delMany(drop, store);
-      return drop.length;
-    }, 0);
+      const drop = games.slice(keep);
+      const solves = solveKeysFor(all, new Set(drop.map(([, g]) => g.id)));
+      await delMany([...drop.map(([k]) => k), ...solves], store);
+      return { games: drop.length, solves: solves.length };
+    }, EMPTY_PURGE);
 
-  forgetGame = (id: string): Promise<void> => this.use(store => del(GAME + id, store), undefined);
+  /** One game, and the record of solving anything in it. Same rule as a purge. */
+  forgetGame = (id: string): Promise<void> =>
+    this.use(async store => {
+      const solves = solveKeysFor(await entries<string, unknown>(store), new Set([id]));
+      await delMany([GAME + id, ...solves], store);
+    }, undefined);
 
   /** Everything for this username. Used by the settings panel, nothing else. */
   wipe = (): Promise<void> => this.use(store => clear(store), undefined);
+}
+
+export interface PurgeResult {
+  games: number;
+  solves: number;
+}
+
+const EMPTY_PURGE: PurgeResult = { games: 0, solves: 0 };
+
+/**
+ * The `solve:` keys belonging to any of `gameIds`.
+ *
+ * A solve key is `solve:<gameId>:<ply>` — a puzzle id is `gameId:ply` — and a
+ * lichess game id carries no colon, so the last one separates the ply. Matched
+ * that way rather than by `startsWith(SOLVE + id)`, which would also catch a
+ * different game whose id merely began with this one's.
+ */
+function solveKeysFor(all: readonly (readonly [IDBValidKey, unknown])[], gameIds: Set<string>): string[] {
+  return all
+    .map(([k]) => k)
+    .filter(isPrefixed(SOLVE))
+    .filter(k => gameIds.has(k.slice(SOLVE.length, k.lastIndexOf(':'))));
 }
 
 const isPrefixed =
@@ -236,7 +275,7 @@ export async function storagePressure(threshold = 0.8): Promise<string | undefin
   return (
     `Storage is nearly full — ${mb(estimate.usage)} of ${mb(estimate.quota)}. ` +
     'Nothing is deleted automatically, but if the browser runs out it may drop all of it. ' +
-    'Settings can delete older games; your solve history is much smaller and stays either way.'
+    'Settings can delete older games — which takes their positions, and your record of solving them, with them.'
   );
 }
 

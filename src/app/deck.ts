@@ -75,13 +75,23 @@ export class Deck {
     return this.pending.length;
   }
 
-  /**
-   * What is still waiting, in the order it will be dealt. For the deck panel,
-   * which counts it and the games it spans — and only that: naming an unsolved
-   * position is the one thing this app must not do.
-   */
+  /** What is still waiting, in the order it will be dealt. For the deck dialog. */
   waiting(): readonly Puzzle[] {
     return this.pending;
+  }
+
+  /**
+   * Deal a named position instead of the next one — "Solve this" in the deck
+   * dialog. It leaves `pending` and becomes the served puzzle, exactly as
+   * `next()` would have left it whenever its turn came round; undefined if it
+   * is not waiting, which a stale dialog can ask for.
+   */
+  take(id: string): Puzzle | undefined {
+    const puzzle = this.pending.find(p => p.id === id);
+    if (!puzzle) return undefined;
+    this.pending = this.pending.filter(p => p.id !== id);
+    this.served = puzzle;
+    return puzzle;
   }
 
   solvedCount(): number {

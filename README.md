@@ -62,13 +62,17 @@ measured no better, because the tail of that list is genuinely uncertain rather
 than underfunded. Settings has a "thinking time per position" dial anyway, if
 you want to spend more or, on a phone, less.
 
-**The deck can be looked at, one half of it anyway.** The *Deck* button lists
-every position you have solved — the move you played, what it cost, how the
-solve went, and a link into the game — and will put any of them back on the
-board as a replay, which changes nothing that was recorded. The positions still
-waiting are only counted, never listed: an unsolved position is supposed to
-arrive with nothing attached to it, so there is nothing to list that would not
-give it away.
+**The deck can be looked through.** The *Deck* button opens every position you
+have, over the board rather than under it. Positions still waiting are bare
+boards — the position and the side to play, nothing else, exactly as one arrives
+when it is dealt — and "Solve this" jumps the queue. Solved ones come with
+everything: the move you played, what it cost, how the solve went, a link into
+the game, and a button that puts the position back on the board as a replay,
+which changes nothing that was recorded.
+
+Deleting games in Settings deletes their positions **and your record of having
+solved them** — a note about solving a position that no longer exists is not
+worth keeping.
 
 **This uses your processor, and it is meant to.** Blindspot is a chess engine
 running in a tab: every position is searched before you see it, so a long

@@ -512,45 +512,113 @@ button.danger:hover {
   margin: 0 0 0.35rem;
 }
 
-/* --- the deck panel --- */
+/* --- the deck dialog --- */
 
-/* One solved position per row: what happened on the left, the replay button on
-   the right. The panel is already scrolled, so the list is not — a scrollbox
-   inside a scrollbox is worse than a long page. */
-.review-list {
+/* Modal, over the board rather than under it: the deck is a grid of boards and
+   reading it must not push the one being solved off the screen. `<dialog>`
+   brings the backdrop, Escape and the focus trap; this is only the look. */
+.deck-dialog {
+  width: min(1100px, 94vw);
+  max-height: 88vh;
+  padding: 1rem 1.25rem 1.5rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.deck-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+.deck-dialog .panel-head {
+  position: sticky;
+  top: -1rem;
+  margin: -1rem -1.25rem 0.5rem;
+  padding: 1rem 1.25rem 0.5rem;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.deck-section {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 1.5rem 0 0.3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 1rem;
+}
+
+.deck-section .dim {
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+
+.deck-dialog .hint {
+  max-width: 46rem;
+}
+
+/* auto-fill rather than auto-fit: a single card should stay card-sized instead
+   of stretching to the full width of the dialog. */
+.deck-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 1rem;
   list-style: none;
-  margin: 0;
+  margin: 1rem 0 0;
   padding: 0;
 }
 
-.review-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 0.15rem 1rem;
-  padding: 0.6rem 0;
-  border-top: 1px solid var(--line);
+.deck-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.85rem;
 }
 
-.review-main {
-  grid-column: 1;
+/* The board is the card. Everything under it is caption. */
+.deck-card .mini {
+  aspect-ratio: 1;
+  width: 100%;
 }
 
-.review-meta {
-  grid-column: 1;
-  font-size: 0.9rem;
+.deck-card-text {
+  line-height: 1.35;
+}
+
+.deck-card-text .dim,
+.deck-card-meta {
+  display: block;
+  font-size: 0.8rem;
   color: var(--dim);
 }
 
-.review-row button {
-  grid-column: 2;
-  grid-row: 1 / span 2;
+/* Push the button to the bottom, so cards with one line of caption and cards
+   with three still line their buttons up. */
+.deck-card button {
+  margin-top: auto;
+  align-self: flex-start;
 }
 
-.review-row.gone {
-  grid-template-columns: 1fr;
-}
-
-.review-meta a {
+.deck-card-meta a {
   color: inherit;
+}
+
+.deck-card.gone {
+  justify-content: center;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
 }
